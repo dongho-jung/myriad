@@ -889,6 +889,58 @@ func setCodexThreadName(socketPath, threadID, name string) error {
 	return err
 }
 
+func deferCodexThreadName(store *Store, session Record, name string) error {
+	checkout := stringValue(session, "checkout")
+	sessionID := stringValue(session, "session_id")
+	if checkout == "" || sessionID == "" {
+		return fail("active Codex session has no checkout identity")
+	}
+	sessionPath, err := store.CheckoutSessionPath(checkout, "")
+	if err != nil {
+		return err
+	}
+	return updateSessionMetadata(sessionPath, sessionID, Record{
+		"codex_thread_name_pending":    name,
+		"codex_thread_name_pending_at": now(),
+	})
+}
+
+func finalizeCodexThreadName(store *Store, sessionPath, sessionID, socketPath, workingDirectory string, allowLatest bool) error {
+	if sessionPath == "" || sessionID == "" || socketPath == "" {
+		return nil
+	}
+	var session Record
+	if err := readJSON(sessionPath, maxJSONBytes, &session); err != nil {
+		return err
+	}
+	if stringValue(session, "session_id") != sessionID {
+		return fail("Codex session changed before its title was finalized")
+	}
+	name := stringValue(session, "codex_thread_name_pending")
+	if name == "" {
+		return nil
+	}
+	threadID := stringValue(session, "codex_thread_id")
+	if threadID == "" && allowLatest {
+		var err error
+		threadID, err = latestCodexThreadID(socketPath, workingDirectory)
+		if err != nil {
+			return err
+		}
+	}
+	if threadID == "" {
+		return fail("Codex thread id is unavailable for deferred title")
+	}
+	if err := setCodexThreadName(socketPath, threadID, name); err != nil {
+		return err
+	}
+	return updateSessionMetadata(sessionPath, sessionID, Record{
+		"codex_thread_name":              name,
+		"codex_thread_name_finalized_at": now(),
+		"codex_thread_name_pending":      nil,
+	})
+}
+
 func refreshCodexTaskStatus(store *Store, taskID string) error {
 	task, err := store.Load(taskID)
 	if err != nil {
@@ -910,15 +962,19 @@ func refreshCodexTaskStatus(store *Store, taskID string) error {
 	if socketPath == "" {
 		return nil
 	}
+	title := codexTaskStatusTitle(store, taskID)
+	if title == "" {
+		return nil
+	}
+	state := stringValue(session, "notification_state")
+	if state == "starting" || state == "ready" {
+		return deferCodexThreadName(store, session, title)
+	}
 	if threadID == "" {
 		threadID, err = latestCodexThreadID(socketPath, stringValue(session, "working_directory"))
 		if err != nil || threadID == "" {
 			return err
 		}
-	}
-	title := codexTaskStatusTitle(store, taskID)
-	if title == "" {
-		return nil
 	}
 	return setCodexThreadName(socketPath, threadID, title)
 }
@@ -1111,21 +1167,18 @@ func provisionHook() error {
 	threadID := stringValue(payload, "session_id")
 	if threadID != "" {
 		metadata["codex_thread_id"] = threadID
+		title := codexTaskStatusTitle(store, taskID)
+		if title == "" {
+			title = branch + " -> " + firstNonempty(stringValue(task, "target_branch"), "base")
+		}
+		metadata["codex_thread_name_pending"] = title
+		metadata["codex_thread_name_pending_at"] = now()
 		if stringValue(session, "pending_codex_thread_id") == threadID {
 			metadata["pending_codex_thread_id"] = nil
 		}
 	}
 	if err := updateSessionMetadata(sessionPath, sessionID, metadata); err != nil {
 		fmt.Fprintf(os.Stderr, "myriad: Codex task metadata unavailable: %v\n", err)
-	}
-	if threadID != "" && controlSocket != "" {
-		title := codexTaskStatusTitle(store, taskID)
-		if title == "" {
-			title = branch + " -> " + firstNonempty(stringValue(task, "target_branch"), "base")
-		}
-		if err := setCodexThreadName(controlSocket, threadID, title); err != nil {
-			fmt.Fprintf(os.Stderr, "myriad: Codex branch status unavailable: %v\n", err)
-		}
 	}
 	contextText := fmt.Sprintf("Myriad provisioned the managed checkout before this turn: worktree %s, branch %s. Inspect, edit, validate, and commit repository work there.", stringValue(task, "worktree_path"), branch)
 	output := Record{"hookSpecificOutput": Record{"hookEventName": "UserPromptSubmit", "additionalContext": contextText}}

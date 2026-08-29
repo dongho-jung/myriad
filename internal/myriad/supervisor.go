@@ -104,7 +104,8 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 	descendantTerminateAt := time.Time{}
 	controlTerminateAt := time.Time{}
 	controlKilled := false
-	pendingCleanupDone := false
+	pendingCleanupDone := pendingThreadID == ""
+	codexTitleFinalized := control == nil
 	notificationClosed := false
 
 	for {
@@ -203,6 +204,18 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 				}
 			}
 			pendingCleanupDone = true
+		}
+
+		if mainDone && control != nil && !controlDone && pendingCleanupDone && !codexTitleFinalized {
+			if err := finalizeCodexThreadName(store, sessionPath, sessionID, controlSocket, workingDirectory, pendingThreadID == ""); err != nil {
+				fmt.Fprintf(os.Stderr, "myriad: Codex final title unavailable: %v\n", err)
+				if sessionPath != "" {
+					_ = updateSessionMetadata(sessionPath, sessionID, Record{
+						"codex_thread_name_finalize_error": err.Error(),
+					})
+				}
+			}
+			codexTitleFinalized = true
 		}
 
 		if mainDone && control != nil && !controlDone {
