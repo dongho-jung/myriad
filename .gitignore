@@ -1,0 +1,4 @@
+/dist/
+/myriad
+*.test
+coverage.out
