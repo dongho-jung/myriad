@@ -82,13 +82,12 @@ validation path, and integration result for that repository.
 Jira and pull-request display context is private task runtime state under the
 Myriad state directory, not repository memory. Each command accepts
 space-separated values, preserves their order, and removes duplicates. Updating
-the context immediately mirrors groups such as `[COM-12 CER-42] [#22 #53]` into
-an active Codex thread title; Claude reads the same context through
-`myriad statusline --claude`. Codex currently treats externally assigned thread
-titles as plain text, so those grouped labels cannot carry individual
-hyperlinks. Myriad also enables Codex's native `pull-request-number` status item:
-when Codex discovers an open pull request for the current checkout, it renders
-that PR separately as a clickable terminal hyperlink.
+the context immediately mirrors the Jira group, such as `[COM-12 CER-42]`, into
+an active Codex thread title. Myriad enables Codex's native
+`pull-request-number` status item beside it: when Codex discovers an open pull
+request for the current checkout, it renders that PR separately as a clickable
+terminal hyperlink. Claude and the operator-facing Myriad status line continue
+to show the full Jira and PR groups through `myriad statusline --claude`.
 
 Checks are passed as repeatable `--check` values:
 

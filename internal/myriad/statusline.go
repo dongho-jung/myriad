@@ -98,18 +98,16 @@ func codexTaskStatusTitle(store *Store, taskID string) string {
 	candidates = append(candidates, attachments...)
 
 	issues := []string{}
-	pullRequests := []int{}
 	for _, task := range candidates {
-		candidateIssues, candidatePullRequests := taskDisplayContext(store, task)
+		candidateIssues, _ := taskDisplayContext(store, task)
 		issues = appendUniqueStrings(issues, candidateIssues...)
-		pullRequests = appendUniqueInts(pullRequests, candidatePullRequests...)
 	}
 
 	branch := firstNonempty(stringValue(selected, "branch"), storedTaskTitle(selected), "task")
 	if target := stringValue(selected, "target_branch"); target != "" && target != branch {
 		branch += " -> " + target
 	}
-	context := displayContext(issues, pullRequests)
+	context := displayContext(issues, nil)
 	if context == "" {
 		return branch
 	}

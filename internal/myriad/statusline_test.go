@@ -78,7 +78,7 @@ func TestCodexTaskStatusTitleUsesAttachmentAndPrimaryContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got, want := codexTaskStatusTitle(store, "attachment-task"), "[CAPE-123 COM-42] [#82 #91] fix-login-api -> develop"; got != want {
+	if got, want := codexTaskStatusTitle(store, "attachment-task"), "[CAPE-123 COM-42] fix-login-api -> develop"; got != want {
 		t.Fatalf("title = %q, want %q", got, want)
 	}
 }
@@ -124,13 +124,13 @@ func TestContextCommandRefreshesActiveCodexTitle(t *testing.T) {
 	if err := contextCommand(store, taskID, nil, []string{"42", "https://github.com/acme/repo/pull/53", "42"}, false, false); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := <-names, "[CAPE-123 COM-42] [#42 #53] fix-login -> main"; got != want {
+	if got, want := <-names, "[CAPE-123 COM-42] fix-login -> main"; got != want {
 		t.Fatalf("PR title = %q, want %q", got, want)
 	}
 	if err := contextCommand(store, taskID, nil, nil, true, false); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := <-names, "[#42 #53] fix-login -> main"; got != want {
+	if got, want := <-names, "fix-login -> main"; got != want {
 		t.Fatalf("cleared title = %q, want %q", got, want)
 	}
 	if !strings.HasPrefix(codexManagedStatusLine, `tui.status_line=["thread-title","pull-request-number",`) {
