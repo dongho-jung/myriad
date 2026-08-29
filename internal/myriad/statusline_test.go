@@ -71,14 +71,14 @@ func TestCodexTaskStatusTitleUsesAttachmentAndPrimaryContext(t *testing.T) {
 	if err := store.Save(attachment); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeTaskContext(store, "primary-task", Record{"jira_issue": "CAPE-123"}); err != nil {
+	if err := writeTaskContext(store, "primary-task", Record{"jira_issues": []string{"CAPE-123", "COM-42"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeTaskContext(store, "attachment-task", Record{"pull_request_number": 82}); err != nil {
+	if err := writeTaskContext(store, "attachment-task", Record{"pull_request_numbers": []int{82, 91}}); err != nil {
 		t.Fatal(err)
 	}
 
-	if got, want := codexTaskStatusTitle(store, "attachment-task"), "[CAPE-123|PR#82] fix-login-api -> develop"; got != want {
+	if got, want := codexTaskStatusTitle(store, "attachment-task"), "[CAPE-123 COM-42] [#82 #91] fix-login-api -> develop"; got != want {
 		t.Fatalf("title = %q, want %q", got, want)
 	}
 }
@@ -115,25 +115,116 @@ func TestContextCommandRefreshesActiveCodexTitle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := contextCommand(store, taskID, "cape-123", "", false, false); err != nil {
+	if err := contextCommand(store, taskID, []string{"cape-123", "com-42", "CAPE-123"}, nil, false, false); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := <-names, "[CAPE-123] fix-login -> main"; got != want {
+	if got, want := <-names, "[CAPE-123 COM-42] fix-login -> main"; got != want {
 		t.Fatalf("Jira title = %q, want %q", got, want)
 	}
-	if err := contextCommand(store, taskID, "", "42", false, false); err != nil {
+	if err := contextCommand(store, taskID, nil, []string{"42", "https://github.com/acme/repo/pull/53", "42"}, false, false); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := <-names, "[CAPE-123|PR#42] fix-login -> main"; got != want {
+	if got, want := <-names, "[CAPE-123 COM-42] [#42 #53] fix-login -> main"; got != want {
 		t.Fatalf("PR title = %q, want %q", got, want)
 	}
-	if err := contextCommand(store, taskID, "", "", true, false); err != nil {
+	if err := contextCommand(store, taskID, nil, nil, true, false); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := <-names, "[PR#42] fix-login -> main"; got != want {
+	if got, want := <-names, "[#42 #53] fix-login -> main"; got != want {
 		t.Fatalf("cleared title = %q, want %q", got, want)
 	}
 	if !strings.HasPrefix(codexManagedStatusLine, `tui.status_line=["thread-title",`) {
 		t.Fatalf("managed Codex status line does not lead with its context title: %s", codexManagedStatusLine)
+	}
+}
+
+func TestRunContextCommandAcceptsSpaceSeparatedValues(t *testing.T) {
+	store := testStore(t)
+	taskID := "multi-context-task"
+	if err := store.Save(Record{
+		"task_id": taskID, "status": StatusCreated, "agent": "codex",
+		"description": "COM-1 PR #7", "branch": "multi-context", "target_branch": "main",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runContextCommand(store, []string{"--jira", "com-12", "CER-42", "COM-12", "--task", taskID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runContextCommand(store, []string{"--task", taskID, "--pr", "22", "53,22"}); err != nil {
+		t.Fatal(err)
+	}
+	context := readTaskContext(store, taskID)
+	issues, hasIssues, err := taskContextJiraIssues(context)
+	if err != nil || !hasIssues {
+		t.Fatalf("Jira context = (%v, %t, %v)", issues, hasIssues, err)
+	}
+	if got, want := strings.Join(issues, " "), "COM-12 CER-42"; got != want {
+		t.Fatalf("Jira issues = %q, want %q", got, want)
+	}
+	numbers, hasNumbers, err := taskContextPullRequestNumbers(context)
+	if err != nil || !hasNumbers {
+		t.Fatalf("PR context = (%v, %t, %v)", numbers, hasNumbers, err)
+	}
+	if got, want := displayContext(nil, numbers), "[#22 #53]"; got != want {
+		t.Fatalf("pull requests = %q, want %q", got, want)
+	}
+}
+
+func TestLegacyContextReadsAsPluralAndClearSuppressesInference(t *testing.T) {
+	store := testStore(t)
+	taskID := "legacy-context-task"
+	if err := store.Save(Record{
+		"task_id": taskID, "status": StatusCreated,
+		"description": "CAPE-999 and PR #999",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := marshalPrivate(Record{
+		"schema_version":      ContextSchema,
+		"task_id":             taskID,
+		"jira_issue":          "cape-123",
+		"pull_request_number": 82,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.ContextPath(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWrite(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	issues, numbers := taskDisplayContext(store, Record{
+		"task_id": taskID, "description": "CAPE-999 and PR #999",
+	})
+	if got, want := displayContext(issues, numbers), "[CAPE-123] [#82]"; got != want {
+		t.Fatalf("legacy context = %q, want %q", got, want)
+	}
+	if err := contextCommand(store, taskID, nil, nil, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := contextCommand(store, taskID, nil, nil, false, true); err != nil {
+		t.Fatal(err)
+	}
+	issues, numbers = taskDisplayContext(store, Record{
+		"task_id": taskID, "description": "CAPE-999 and PR #999",
+	})
+	if got := displayContext(issues, numbers); got != "" {
+		t.Fatalf("cleared context fell back to inferred values: %q", got)
+	}
+}
+
+func TestTaskDisplayContextInfersMultipleValues(t *testing.T) {
+	store := testStore(t)
+	issues, numbers := taskDisplayContext(store, Record{
+		"task_id":       "inferred-context-task",
+		"description":   "COM-12 CER-42, PR #22 and PR #53 and COM-12",
+		"source_branch": "feature/CER-42/CAPE-7",
+	})
+	if got, want := displayContext(issues, numbers), "[COM-12 CER-42 CAPE-7] [#22 #53]"; got != want {
+		t.Fatalf("inferred context = %q, want %q", got, want)
 	}
 }

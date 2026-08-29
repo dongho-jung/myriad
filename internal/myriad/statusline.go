@@ -19,29 +19,48 @@ func activeWorktreeTasks(store *Store) []Record {
 			continue
 		}
 		item := cloneRecord(task)
-		issue, number := taskDisplayContext(store, item)
-		if issue != "" {
-			item["statusline_jira_issue"] = issue
+		issues, numbers := taskDisplayContext(store, item)
+		if len(issues) > 0 {
+			item["statusline_jira_issues"] = issues
 		}
-		if number > 0 {
-			item["statusline_pull_request_number"] = number
+		if len(numbers) > 0 {
+			item["statusline_pull_request_numbers"] = numbers
 		}
 		result = append(result, item)
 	}
 	return result
 }
 
-func taskDisplayContext(store *Store, task Record) (string, int) {
+func taskDisplayContext(store *Store, task Record) ([]string, []int) {
 	context := readTaskContext(store, stringValue(task, "task_id"))
-	issue := stringValue(context, "jira_issue")
-	if issue == "" {
-		issue = jiraFromTask(task)
+	issues, hasIssues, _ := taskContextJiraIssues(context)
+	if !hasIssues {
+		issues = jiraIssuesFromTask(task)
 	}
-	number, ok := intValue(context["pull_request_number"])
-	if !ok || number <= 0 {
-		number = pullRequestFromTask(task)
+	numbers, hasNumbers, _ := taskContextPullRequestNumbers(context)
+	if !hasNumbers {
+		numbers = pullRequestsFromTask(task)
 	}
-	return issue, number
+	return issues, numbers
+}
+
+func displayContext(issues []string, pullRequests []int) string {
+	groups := []string{}
+	if len(issues) > 0 {
+		labels := make([]string, 0, len(issues))
+		for _, issue := range issues {
+			labels = append(labels, compactASCII(issue, "Jira", 40))
+		}
+		groups = append(groups, "["+strings.Join(labels, " ")+"]")
+	}
+	if len(pullRequests) > 0 {
+		labels := make([]string, 0, len(pullRequests))
+		for _, pullRequest := range pullRequests {
+			labels = append(labels, fmt.Sprintf("#%d", pullRequest))
+		}
+		groups = append(groups, "["+strings.Join(labels, " ")+"]")
+	}
+	return strings.Join(groups, " ")
 }
 
 func codexTaskStatusTitle(store *Store, taskID string) string {
@@ -78,32 +97,23 @@ func codexTaskStatusTitle(store *Store, taskID string) string {
 	})
 	candidates = append(candidates, attachments...)
 
-	issue, pullRequest := "", 0
+	issues := []string{}
+	pullRequests := []int{}
 	for _, task := range candidates {
-		candidateIssue, candidatePullRequest := taskDisplayContext(store, task)
-		if issue == "" {
-			issue = candidateIssue
-		}
-		if pullRequest == 0 {
-			pullRequest = candidatePullRequest
-		}
+		candidateIssues, candidatePullRequests := taskDisplayContext(store, task)
+		issues = appendUniqueStrings(issues, candidateIssues...)
+		pullRequests = appendUniqueInts(pullRequests, candidatePullRequests...)
 	}
 
 	branch := firstNonempty(stringValue(selected, "branch"), storedTaskTitle(selected), "task")
 	if target := stringValue(selected, "target_branch"); target != "" && target != branch {
 		branch += " -> " + target
 	}
-	contextParts := []string{}
-	if issue != "" {
-		contextParts = append(contextParts, compactASCII(issue, "Jira", 40))
-	}
-	if pullRequest > 0 {
-		contextParts = append(contextParts, fmt.Sprintf("PR#%d", pullRequest))
-	}
-	if len(contextParts) == 0 {
+	context := displayContext(issues, pullRequests)
+	if context == "" {
 		return branch
 	}
-	return "[" + strings.Join(contextParts, "|") + "] " + branch
+	return context + " " + branch
 }
 
 func taskForWorkingDirectory(tasks []Record, current string) string {
@@ -162,17 +172,9 @@ func taskLabel(task Record, current bool) string {
 	if stringValue(task, "attachment_parent_task_id") != "" {
 		attachment = "+"
 	}
-	contextParts := []string{}
-	if issue := stringValue(task, "statusline_jira_issue"); issue != "" {
-		contextParts = append(contextParts, compactASCII(issue, "Jira", 40))
-	}
-	if pr, ok := intValue(task["statusline_pull_request_number"]); ok && pr > 0 {
-		contextParts = append(contextParts, fmt.Sprintf("PR#%d", pr))
-	}
-	context := ""
-	if len(contextParts) > 0 {
-		context = "[" + strings.Join(contextParts, "|") + "]"
-	}
+	issues, _ := normalizedJiraIssues(task["statusline_jira_issues"])
+	pullRequests, _ := normalizedPullRequestNumbers(task["statusline_pull_request_numbers"])
+	context := displayContext(issues, pullRequests)
 	marker := ""
 	if current {
 		marker = "*"

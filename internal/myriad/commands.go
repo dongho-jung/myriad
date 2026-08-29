@@ -452,7 +452,7 @@ func publishCommand(store *Store, selectedTaskID string) (int, error) {
 	return 0, nil
 }
 
-func contextCommand(store *Store, taskID, jira, pr string, clearJira, clearPR bool) error {
+func contextCommand(store *Store, taskID string, jira, pullRequests []string, clearJira, clearPR bool) error {
 	if taskID == "" {
 		taskID = taskForWorkingDirectory(activeWorktreeTasks(store), currentDirectory())
 	}
@@ -473,25 +473,39 @@ func contextCommand(store *Store, taskID, jira, pr string, clearJira, clearPR bo
 	context := readTaskContext(store, taskID)
 	action := ""
 	if clearJira {
+		context["jira_issues"] = []string{}
 		delete(context, "jira_issue")
 		action = "Jira cleared"
 	} else if clearPR {
+		context["pull_request_numbers"] = []int{}
 		delete(context, "pull_request_number")
 		action = "PR cleared"
-	} else if jira != "" {
-		issue, err := jiraIssue(jira)
+	} else if len(jira) > 0 {
+		issues, err := normalizedJiraIssues(jira)
 		if err != nil {
 			return err
 		}
-		context["jira_issue"] = issue
-		action = "Jira " + issue
+		context["jira_issues"] = issues
+		delete(context, "jira_issue")
+		action = "Jira " + strings.Join(issues, " ")
+	} else if len(pullRequests) > 0 {
+		numbers := []int{}
+		for _, value := range pullRequests {
+			number, err := pullRequestNumber(value)
+			if err != nil {
+				return err
+			}
+			numbers = appendUniqueInts(numbers, number)
+		}
+		context["pull_request_numbers"] = numbers
+		delete(context, "pull_request_number")
+		labels := make([]string, 0, len(numbers))
+		for _, number := range numbers {
+			labels = append(labels, fmt.Sprintf("#%d", number))
+		}
+		action = "PR " + strings.Join(labels, " ")
 	} else {
-		number, err := pullRequestNumber(pr)
-		if err != nil {
-			return err
-		}
-		context["pull_request_number"] = number
-		action = fmt.Sprintf("PR #%d", number)
+		return fail("context action has no values")
 	}
 	if err := writeTaskContext(store, taskID, context); err != nil {
 		return err

@@ -281,39 +281,63 @@ func parseResumeOptions(arguments []string) (resumeOptions, error) {
 	return options, nil
 }
 
+func contextOptionValues(arguments []string, index *int, option string) ([]string, error) {
+	values := []string{}
+	for next := *index + 1; next < len(arguments) && !strings.HasPrefix(arguments[next], "-"); next++ {
+		for _, value := range strings.Fields(strings.ReplaceAll(arguments[next], ",", " ")) {
+			values = append(values, value)
+		}
+		*index = next
+	}
+	if len(values) == 0 {
+		return nil, fail("%s requires at least one value", option)
+	}
+	return values, nil
+}
+
 func runContextCommand(store *Store, arguments []string) error {
-	var taskID, jira, pr string
-	clearJira, clearPR, actions := false, false, 0
+	var taskID string
+	jira, pullRequests := []string{}, []string{}
+	setJira, setPR, clearJira, clearPR := false, false, false, false
 	for index := 0; index < len(arguments); index++ {
 		switch arguments[index] {
-		case "--task", "--jira", "--pr":
-			value, err := requireOptionValue(arguments, &index, arguments[index])
+		case "--task":
+			value, err := requireOptionValue(arguments, &index, "--task")
 			if err != nil {
 				return err
 			}
-			if arguments[index-1] == "--task" {
-				taskID = value
-			} else if arguments[index-1] == "--jira" {
-				jira = value
-				actions++
+			taskID = value
+		case "--jira", "--pr":
+			option := arguments[index]
+			values, err := contextOptionValues(arguments, &index, option)
+			if err != nil {
+				return err
+			}
+			if option == "--jira" {
+				jira = append(jira, values...)
+				setJira = true
 			} else {
-				pr = value
-				actions++
+				pullRequests = append(pullRequests, values...)
+				setPR = true
 			}
 		case "--clear-jira":
 			clearJira = true
-			actions++
 		case "--clear-pr":
 			clearPR = true
-			actions++
 		default:
 			return fail("unknown context option: %s", arguments[index])
+		}
+	}
+	actions := 0
+	for _, selected := range []bool{setJira, setPR, clearJira, clearPR} {
+		if selected {
+			actions++
 		}
 	}
 	if actions != 1 {
 		return fail("context requires exactly one of --jira, --clear-jira, --pr, --clear-pr")
 	}
-	return contextCommand(store, taskID, jira, pr, clearJira, clearPR)
+	return contextCommand(store, taskID, jira, pullRequests, clearJira, clearPR)
 }
 
 func runStatusline(store *Store, arguments []string) error {
@@ -429,7 +453,8 @@ Usage:
   myriad start [OPTIONS] [TASK]       create a managed task directly
   myriad publish [TASK_ID]            publish an active checkpoint
   myriad attach PATH                  attach another repository
-  myriad context ACTION               set Jira/PR display context
+  myriad context --jira KEY...        set Jira display contexts
+  myriad context --pr NUMBER...       set pull-request display contexts
   myriad list | status [TASK_ID]      inspect local lifecycle state
   myriad inbox | handoff EVENT_ID     coordinate queued integration
   myriad integrate TASK_ID            retry integration

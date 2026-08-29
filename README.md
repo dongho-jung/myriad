@@ -62,8 +62,8 @@ myriad start [OPTIONS] [TASK]       create a managed task directly
 myriad resume [OPTIONS] [SESSION]   recover work or resume a Codex chat
 myriad publish [TASK_ID]            publish a live committed checkpoint
 myriad attach PATH                  attach a second repository to this session
-myriad context --jira KEY           set display-only Jira context
-myriad context --pr NUMBER          set display-only pull-request context
+myriad context --jira KEY...        set display-only Jira contexts
+myriad context --pr NUMBER...       set display-only pull-request contexts
 myriad list                         list tasks
 myriad status [TASK_ID]             inspect task state
 myriad inbox                        inspect integration handoff notices
@@ -80,9 +80,12 @@ another Git repository. It returns a separate managed worktree, commit history,
 validation path, and integration result for that repository.
 
 Jira and pull-request display context is private task runtime state under the
-Myriad state directory, not repository memory. Updating it immediately mirrors
-the context into an active Codex thread title; Claude reads the same context
-through `myriad statusline --claude`.
+Myriad state directory, not repository memory. Each command accepts
+space-separated values, preserves their order, and removes duplicates. Updating
+the context immediately mirrors groups such as `[COM-12 CER-42] [#22 #53]` into
+an active Codex thread title; Claude reads the same context through
+`myriad statusline --claude`. Codex currently treats externally assigned thread
+titles as plain text, so these labels cannot carry individual hyperlinks.
 
 Checks are passed as repeatable `--check` values:
 

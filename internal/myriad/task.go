@@ -12,7 +12,7 @@ import (
 
 var (
 	taskSlugPattern  = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
-	jiraIssuePattern = regexp.MustCompile(`(?:^|[^A-Z0-9])([A-Z][A-Z0-9_]{1,31}-[1-9][0-9]*)(?:$|[^A-Z0-9])`)
+	jiraIssuePattern = regexp.MustCompile(`([A-Z][A-Z0-9_]{1,31}-[1-9][0-9]*)`)
 	jiraExactPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]{1,31}-[1-9][0-9]*$`)
 	prTextPattern    = regexp.MustCompile(`(?i)(?:https://github\.com/[^/\s]+/[^/\s]+/pull/|\b(?:pr|pull[ _-]*request)\s*#?\s*)([1-9][0-9]*)\b`)
 )
@@ -195,14 +195,18 @@ func jiraIssue(value string) (string, error) {
 	return issue, nil
 }
 
-func jiraFromTask(task Record) string {
+func jiraIssuesFromTask(task Record) []string {
+	issues := []string{}
+	seen := map[string]bool{}
 	for _, field := range []string{"description", "source_branch"} {
-		match := jiraIssuePattern.FindStringSubmatch(stringValue(task, field))
-		if len(match) > 1 {
-			return match[1]
+		for _, match := range jiraIssuePattern.FindAllStringSubmatch(stringValue(task, field), -1) {
+			if len(match) > 1 && !seen[match[1]] {
+				issues = append(issues, match[1])
+				seen[match[1]] = true
+			}
 		}
 	}
-	return ""
+	return issues
 }
 
 func pullRequestNumber(value string) (int, error) {
@@ -220,13 +224,20 @@ func pullRequestNumber(value string) (int, error) {
 	return 0, fail("invalid pull request number: %q", value)
 }
 
-func pullRequestFromTask(task Record) int {
-	match := prTextPattern.FindStringSubmatch(stringValue(task, "description"))
-	if len(match) <= 1 {
-		return 0
+func pullRequestsFromTask(task Record) []int {
+	numbers := []int{}
+	seen := map[int]bool{}
+	for _, match := range prTextPattern.FindAllStringSubmatch(stringValue(task, "description"), -1) {
+		if len(match) <= 1 {
+			continue
+		}
+		value, _ := strconv.Atoi(match[1])
+		if value > 0 && !seen[value] {
+			numbers = append(numbers, value)
+			seen[value] = true
+		}
 	}
-	value, _ := strconv.Atoi(match[1])
-	return value
+	return numbers
 }
 
 func setStatus(store *Store, task Record, status, reason string) error {
