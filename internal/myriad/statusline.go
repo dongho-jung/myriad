@@ -19,22 +19,91 @@ func activeWorktreeTasks(store *Store) []Record {
 			continue
 		}
 		item := cloneRecord(task)
-		context := readTaskContext(store, stringValue(task, "task_id"))
-		issue := stringValue(context, "jira_issue")
-		if issue == "" {
-			issue = jiraFromTask(item)
-		}
+		issue, number := taskDisplayContext(store, item)
 		if issue != "" {
 			item["statusline_jira_issue"] = issue
 		}
-		if number, ok := intValue(context["pull_request_number"]); ok && number > 0 {
-			item["statusline_pull_request_number"] = number
-		} else if number := pullRequestFromTask(item); number > 0 {
+		if number > 0 {
 			item["statusline_pull_request_number"] = number
 		}
 		result = append(result, item)
 	}
 	return result
+}
+
+func taskDisplayContext(store *Store, task Record) (string, int) {
+	context := readTaskContext(store, stringValue(task, "task_id"))
+	issue := stringValue(context, "jira_issue")
+	if issue == "" {
+		issue = jiraFromTask(task)
+	}
+	number, ok := intValue(context["pull_request_number"])
+	if !ok || number <= 0 {
+		number = pullRequestFromTask(task)
+	}
+	return issue, number
+}
+
+func codexTaskStatusTitle(store *Store, taskID string) string {
+	selected, err := store.Load(taskID)
+	if err != nil {
+		return ""
+	}
+	primary := selected
+	if parentID := stringValue(selected, "attachment_parent_task_id"); parentID != "" {
+		if parent, loadErr := store.Load(parentID); loadErr == nil {
+			primary = parent
+		}
+	}
+
+	candidates := []Record{selected}
+	seen := map[string]bool{stringValue(selected, "task_id"): true}
+	if primaryID := stringValue(primary, "task_id"); primaryID != "" && !seen[primaryID] {
+		candidates = append(candidates, primary)
+		seen[primaryID] = true
+	}
+	attachments := []Record{}
+	for _, task := range store.All(false) {
+		if stringValue(task, "attachment_parent_task_id") != stringValue(primary, "task_id") || seen[stringValue(task, "task_id")] {
+			continue
+		}
+		status := stringValue(task, "status")
+		if status != StatusCreated && status != StatusRunning {
+			continue
+		}
+		attachments = append(attachments, task)
+	}
+	sort.SliceStable(attachments, func(i, j int) bool {
+		return stringValue(attachments[i], "created_at") < stringValue(attachments[j], "created_at")
+	})
+	candidates = append(candidates, attachments...)
+
+	issue, pullRequest := "", 0
+	for _, task := range candidates {
+		candidateIssue, candidatePullRequest := taskDisplayContext(store, task)
+		if issue == "" {
+			issue = candidateIssue
+		}
+		if pullRequest == 0 {
+			pullRequest = candidatePullRequest
+		}
+	}
+
+	branch := firstNonempty(stringValue(selected, "branch"), storedTaskTitle(selected), "task")
+	if target := stringValue(selected, "target_branch"); target != "" && target != branch {
+		branch += " -> " + target
+	}
+	contextParts := []string{}
+	if issue != "" {
+		contextParts = append(contextParts, compactASCII(issue, "Jira", 40))
+	}
+	if pullRequest > 0 {
+		contextParts = append(contextParts, fmt.Sprintf("PR#%d", pullRequest))
+	}
+	if len(contextParts) == 0 {
+		return branch
+	}
+	return "[" + strings.Join(contextParts, "|") + "] " + branch
 }
 
 func taskForWorkingDirectory(tasks []Record, current string) string {

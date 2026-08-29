@@ -889,6 +889,40 @@ func setCodexThreadName(socketPath, threadID, name string) error {
 	return err
 }
 
+func refreshCodexTaskStatus(store *Store, taskID string) error {
+	task, err := store.Load(taskID)
+	if err != nil {
+		return err
+	}
+	primary := task
+	if parentID := stringValue(task, "attachment_parent_task_id"); parentID != "" {
+		primary, err = store.Load(parentID)
+		if err != nil {
+			return err
+		}
+	}
+	session := readActiveCheckoutSession(store, stringValue(primary, "worktree_path"))
+	if session == nil || stringValue(session, "agent") != "codex" || stringValue(session, "task_id") != stringValue(primary, "task_id") {
+		return nil
+	}
+	socketPath := stringValue(session, "control_socket")
+	threadID := stringValue(session, "codex_thread_id")
+	if socketPath == "" {
+		return nil
+	}
+	if threadID == "" {
+		threadID, err = latestCodexThreadID(socketPath, stringValue(session, "working_directory"))
+		if err != nil || threadID == "" {
+			return err
+		}
+	}
+	title := codexTaskStatusTitle(store, taskID)
+	if title == "" {
+		return nil
+	}
+	return setCodexThreadName(socketPath, threadID, title)
+}
+
 func codexStatusType(value any) string {
 	if text, ok := value.(string); ok {
 		return text
@@ -1085,7 +1119,11 @@ func provisionHook() error {
 		fmt.Fprintf(os.Stderr, "myriad: Codex task metadata unavailable: %v\n", err)
 	}
 	if threadID != "" && controlSocket != "" {
-		if err := setCodexThreadName(controlSocket, threadID, branch+" -> "+firstNonempty(stringValue(task, "target_branch"), "base")); err != nil {
+		title := codexTaskStatusTitle(store, taskID)
+		if title == "" {
+			title = branch + " -> " + firstNonempty(stringValue(task, "target_branch"), "base")
+		}
+		if err := setCodexThreadName(controlSocket, threadID, title); err != nil {
 			fmt.Fprintf(os.Stderr, "myriad: Codex branch status unavailable: %v\n", err)
 		}
 	}

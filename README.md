@@ -79,6 +79,11 @@ myriad statusline [--claude]        render active task status
 another Git repository. It returns a separate managed worktree, commit history,
 validation path, and integration result for that repository.
 
+Jira and pull-request display context is private task runtime state under the
+Myriad state directory, not repository memory. Updating it immediately mirrors
+the context into an active Codex thread title; Claude reads the same context
+through `myriad statusline --claude`.
+
 Checks are passed as repeatable `--check` values:
 
 ```console

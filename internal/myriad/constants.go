@@ -50,7 +50,7 @@ const (
 	codexSlugLimit         = 48
 	codexSlugPreviewLimit  = 4000
 	codexDirectStatusLine  = `tui.status_line=["current-dir","model-with-reasoning"]`
-	codexManagedStatusLine = `tui.status_line=["current-dir","thread-title","model-with-reasoning"]`
+	codexManagedStatusLine = `tui.status_line=["thread-title","current-dir","model-with-reasoning"]`
 
 	notificationProtocol = 1
 )

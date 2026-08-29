@@ -496,6 +496,9 @@ func contextCommand(store *Store, taskID, jira, pr string, clearJira, clearPR bo
 	if err := writeTaskContext(store, taskID, context); err != nil {
 		return err
 	}
+	if err := refreshCodexTaskStatus(store, taskID); err != nil {
+		fmt.Fprintf(os.Stderr, "myriad: Codex status context unavailable: %v\n", err)
+	}
 	fmt.Printf("context %s: %s\n", taskID, action)
 	return nil
 }
