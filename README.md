@@ -85,7 +85,10 @@ space-separated values, preserves their order, and removes duplicates. Updating
 the context immediately mirrors groups such as `[COM-12 CER-42] [#22 #53]` into
 an active Codex thread title; Claude reads the same context through
 `myriad statusline --claude`. Codex currently treats externally assigned thread
-titles as plain text, so these labels cannot carry individual hyperlinks.
+titles as plain text, so those grouped labels cannot carry individual
+hyperlinks. Myriad also enables Codex's native `pull-request-number` status item:
+when Codex discovers an open pull request for the current checkout, it renders
+that PR separately as a clickable terminal hyperlink.
 
 Checks are passed as repeatable `--check` values:
 

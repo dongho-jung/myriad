@@ -94,6 +94,9 @@ func TestCodexTUICommandOmitsUnmanagedThreadTitle(t *testing.T) {
 	if !strings.Contains(joined, codexDirectStatusLine) {
 		t.Fatalf("unmanaged command is missing its status line: %#v", command)
 	}
+	if !strings.Contains(codexDirectStatusLine, `"pull-request-number"`) {
+		t.Fatalf("unmanaged status line does not expose Codex's linked PR item: %s", codexDirectStatusLine)
+	}
 }
 
 func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
@@ -117,6 +120,9 @@ func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("remote command is missing %q: %#v", expected, command)
 		}
+	}
+	if !strings.HasPrefix(codexManagedStatusLine, `tui.status_line=["thread-title","pull-request-number",`) {
+		t.Fatalf("managed status line does not place Codex's linked PR item after its context title: %s", codexManagedStatusLine)
 	}
 }
 
