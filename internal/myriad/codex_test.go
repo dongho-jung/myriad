@@ -85,16 +85,35 @@ func TestCodexProvisionServerUsesPinnedHookBypass(t *testing.T) {
 	}
 }
 
+func TestCodexTUICommandOmitsUnmanagedThreadTitle(t *testing.T) {
+	command := codexTUICommand(nil, "/project")
+	joined := strings.Join(command, "\n")
+	if strings.Contains(joined, "thread-title") {
+		t.Fatalf("unmanaged command exposes a thread title: %#v", command)
+	}
+	if !strings.Contains(joined, codexDirectStatusLine) {
+		t.Fatalf("unmanaged command is missing its status line: %#v", command)
+	}
+}
+
 func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
 	command := codexRemoteCommand(
-		[]string{"codex", "-c", "tui.show_tooltips=true", "--dangerously-bypass-approvals-and-sandbox"},
+		[]string{
+			"codex",
+			"-c", "tui.show_tooltips=true",
+			"-c", codexDirectStatusLine,
+			"--dangerously-bypass-approvals-and-sandbox",
+		},
 		"/tmp/control.sock", []string{"/project"},
 	)
 	joined := strings.Join(command, "\n")
 	if strings.Contains(joined, "tui.show_tooltips=true") {
 		t.Fatalf("stale tooltip override survived: %#v", command)
 	}
-	for _, expected := range []string{"--remote", "unix:///tmp/control.sock", "tui.show_tooltips=false", "model-with-reasoning"} {
+	if count := strings.Count(joined, "tui.status_line="); count != 1 {
+		t.Fatalf("remote command has %d status line overrides: %#v", count, command)
+	}
+	for _, expected := range []string{"--remote", "unix:///tmp/control.sock", "tui.show_tooltips=false", codexManagedStatusLine} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("remote command is missing %q: %#v", expected, command)
 		}

@@ -314,7 +314,7 @@ func codexRemoteCommand(command []string, socketPath string, trustedDirectories 
 		"--remote", "unix://" + socketPath,
 		"-c", codexTrustedProjectsConfig(trustedDirectories),
 		"-c", "tui.show_tooltips=false",
-		"-c", `tui.status_line=["current-dir","thread-title","model-with-reasoning"]`,
+		"-c", codexManagedStatusLine,
 	}
 	return append(result[:executable+1], append(addition, result[executable+1:]...)...)
 }
