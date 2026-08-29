@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -247,81 +246,82 @@ func terminateOwnedProcess(value any) {
 	}
 }
 
-func compactCommitTitle(value string) string {
-	title := strings.Join(strings.Fields(value), " ")
-	if title == "" {
-		title = "chore: integrate task result"
-	}
-	conventional := regexp.MustCompile(`^(?:fix|feat|refactor|chore|docs|test|style)(?:\([^)]*\))?!?:\s+`)
-	if !conventional.MatchString(title) {
-		title = "chore: integrate " + title
-	}
-	if len(title) > 50 {
-		title = strings.TrimSpace(title[:47]) + "..."
-	}
-	return title
-}
-
-func integrationCommitMessage(repository string, task Record, targetSHA, resultCommit string) (string, string, error) {
-	log, err := gitCommand(repository, true, "log", "--reverse", "--format=%h%x09%s", targetSHA+".."+resultCommit)
+func rebaseIntegrationResult(path, targetSHA, base string) (string, bool, error) {
+	rebased, err := gitCommand(
+		path, false,
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "commit.gpgSign=false",
+		"-c", "rebase.updateRefs=false",
+		"-c", "rebase.autoStash=false",
+		"-c", "rerere.enabled=false",
+		"-c", "notes.rewrite.rebase=false",
+		"rebase", "--merge", "--rebase-merges", "--no-autostash",
+		"--committer-date-is-author-date", "--empty=drop", "--keep-empty",
+		"--onto", targetSHA, base,
+	)
 	if err != nil {
-		return "", "", err
+		return "", false, err
 	}
-	type commit struct{ hash, subject string }
-	commits := []commit{}
-	for _, line := range strings.Split(strings.TrimSpace(log.Stdout), "\n") {
-		hash, subject, found := strings.Cut(line, "\t")
-		if found && hash != "" && subject != "" {
-			commits = append(commits, commit{hash, strings.Join(strings.Fields(subject), " ")})
+	if rebased.ExitCode != 0 {
+		conflicts, _ := gitCommand(path, false, "diff", "--name-only", "--diff-filter=U")
+		if strings.TrimSpace(conflicts.Stdout) != "" {
+			return "", true, nil
 		}
-	}
-	title := ""
-	if len(commits) > 0 {
-		title = commits[0].subject
-	}
-	body := []string{
-		"- 관리형 에이전트 결과 통합",
-		"  - 작업 ID: " + stringValue(task, "task_id"),
-		fmt.Sprintf("  - 경로: %s -> %s", firstNonempty(stringValue(task, "branch"), "task branch"), firstNonempty(stringValue(task, "target_branch"), "target")),
-		"- 포함 커밋",
-	}
-	for index, item := range commits {
-		if index == 20 {
-			body = append(body, fmt.Sprintf("  - 그 외 %d개 커밋", len(commits)-20))
-			break
+		detail := strings.TrimSpace(rebased.Stderr + rebased.Stdout)
+		if detail == "" {
+			detail = fmt.Sprintf("git rebase exited with %d", rebased.ExitCode)
 		}
-		body = append(body, fmt.Sprintf("  - %s %s", item.hash, item.subject))
+		return "", false, fail("integration rebase failed: %s", detail)
 	}
-	if len(commits) == 0 {
-		body = append(body, "  - "+resultCommit[:min(12, len(resultCommit))]+" 작업 결과")
-	}
-	return compactCommitTitle(title), strings.Join(body, "\n"), nil
+	head, err := gitRef(path, "HEAD")
+	return head, false, err
 }
 
 func createIntegrationCandidate(repository string, task Record, targetSHA, resultCommit, candidate string) (string, string, error) {
 	if err := os.MkdirAll(filepath.Dir(candidate), 0o700); err != nil {
 		return "", "", err
 	}
+	if _, err := gitCommand(repository, true, "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", candidate, resultCommit); err != nil {
+		return "", "", err
+	}
 	if isAncestor(repository, targetSHA, resultCommit) {
-		_, err := gitCommand(repository, true, "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", candidate, resultCommit)
-		return resultCommit, "fast-forward", err
+		return resultCommit, "fast-forward", nil
 	}
-	if _, err := gitCommand(repository, true, "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", candidate, targetSHA); err != nil {
-		return "", "", err
+	base := stringValue(task, "base_sha")
+	if base == "" {
+		return "", "", fail("integration candidate has no recorded task base")
 	}
-	title, body, err := integrationCommitMessage(repository, task, targetSHA, resultCommit)
+	head, conflicted, err := rebaseIntegrationResult(candidate, targetSHA, base)
 	if err != nil {
 		return "", "", err
 	}
-	merged, err := gitCommand(candidate, false, "-c", "core.hooksPath=/dev/null", "merge", "--no-ff", "-m", title, "-m", body, resultCommit)
-	if err != nil {
-		return "", "", err
+	if conflicted {
+		return "", "rebase", nil
 	}
-	if merged.ExitCode != 0 {
-		return "", "merge", nil
+	return head, "rebase", nil
+}
+
+func synchronizePublishedRebase(path, base, targetSHA, resultCommit, candidateHead string) error {
+	current, err := gitRef(path, "HEAD")
+	if err != nil || current != resultCommit {
+		return fail("task worktree changed while publish was synchronizing")
 	}
-	head, err := gitRef(candidate, "HEAD")
-	return head, "merge", err
+	changes, err := worktreeChanges(path)
+	if err != nil || len(changes.Normal) > 0 {
+		return fail("task worktree changed while publish was synchronizing")
+	}
+	head, conflicted, err := rebaseIntegrationResult(path, targetSHA, base)
+	if err != nil || conflicted {
+		_, _ = gitCommand(path, false, "-c", "core.hooksPath=/dev/null", "rebase", "--abort")
+		if err != nil {
+			return err
+		}
+		return fail("task worktree conflicted while synchronizing the published rebase")
+	}
+	if unchanged, reason := candidateUnchanged(path, candidateHead); head != candidateHead || !unchanged {
+		return fail("task worktree changed while publish was synchronizing: %s", firstNonempty(reason, "rebased HEAD differs from validated candidate"))
+	}
+	return nil
 }
 
 func advanceIntegrationTarget(repository, target, targetSHA, candidateHead, initialCheckout string) string {
@@ -498,12 +498,12 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 	}
 	_ = setStatus(store, task, StatusValidating, "")
 	if !validateCandidate(store, task, candidate, targetSHA, candidateHead) {
-		return deferIntegration(store, task, StatusRecovery, "merged candidate failed validation", true)
+		return deferIntegration(store, task, StatusRecovery, "integration candidate failed validation", true)
 	}
 	if unchanged, reason := candidateUnchanged(candidate, candidateHead); !unchanged {
 		task["validation_failure"] = Record{"reason": reason}
 		_ = store.Save(task)
-		return deferIntegration(store, task, StatusRecovery, "merged candidate changed after validation", true)
+		return deferIntegration(store, task, StatusRecovery, "integration candidate changed after validation", true)
 	}
 	differs, _ := treesDiffer(repository, targetSHA, candidateHead)
 	if !differs {
@@ -637,18 +637,17 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if current != resultCommit || len(currentChanges.Normal) > 0 {
 		return nil, fail("task worktree changed while publish was validating")
 	}
+	if strategy == "rebase" {
+		if err := synchronizePublishedRebase(path, base, targetSHA, resultCommit, candidateHead); err != nil {
+			return nil, err
+		}
+	}
 	differs, _ := treesDiffer(repository, targetSHA, candidateHead)
 	if !differs {
 		return Record{"result_commit": resultCommit, "published_commit": targetSHA, "strategy": "redundant"}, nil
 	}
 	if reason := advanceIntegrationTarget(repository, target, targetSHA, candidateHead, checkout); reason != "" {
 		return nil, fail("publish target changed: %s", reason)
-	}
-	if strategy == "merge" {
-		synchronized, _ := gitCommand(path, false, "-c", "core.hooksPath=/dev/null", "merge", "--ff-only", candidateHead)
-		if synchronized.ExitCode != 0 {
-			fmt.Fprintf(os.Stderr, "myriad: published target but could not fast-forward the active task branch: %s\n", path)
-		}
 	}
 	return Record{"result_commit": resultCommit, "published_commit": candidateHead, "strategy": strategy}, nil
 }
