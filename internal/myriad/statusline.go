@@ -242,23 +242,30 @@ func renderStatusline(tasks []Record, currentTaskID string, width int, epoch flo
 	}
 	body := strings.Join(otherEntries, " | ")
 	complete := prefix + body
-	if len(complete) <= width {
+	if len([]rune(complete)) <= width {
 		return complete
 	}
-	if len(otherEntries) == 0 || len(prefix) >= width {
-		if len(prefix) > width {
-			return prefix[:width]
+	prefixRunes := []rune(prefix)
+	if len(otherEntries) == 0 || len(prefixRunes) >= width {
+		if len(prefixRunes) > width {
+			return string(prefixRunes[:width])
 		}
 		return prefix
 	}
-	track := strings.Join(otherEntries, " · ") + "   "
-	offset := int(math.Floor(epoch)) % len(track)
-	doubled := track + track
-	needed := width - len(prefix)
-	for len(doubled) < offset+needed {
-		doubled += track
+	track := []rune(strings.Join(otherEntries, " · ") + "   ")
+	offset := 0
+	if !math.IsNaN(epoch) && !math.IsInf(epoch, 0) {
+		offset = int(math.Mod(math.Floor(epoch), float64(len(track))))
+		if offset < 0 {
+			offset += len(track)
+		}
 	}
-	return prefix + doubled[offset:offset+needed]
+	needed := width - len(prefixRunes)
+	window := make([]rune, needed)
+	for index := range window {
+		window[index] = track[(offset+index)%len(track)]
+	}
+	return prefix + string(window)
 }
 
 func statusline(store *Store, payload Record, claude bool, width int, epoch float64) string {

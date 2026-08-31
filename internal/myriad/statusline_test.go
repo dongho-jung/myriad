@@ -1,12 +1,14 @@
 package myriad
 
 import (
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 )
@@ -226,5 +228,25 @@ func TestTaskDisplayContextInfersMultipleValues(t *testing.T) {
 	})
 	if got, want := displayContext(issues, numbers), "[COM-12 CER-42 CAPE-7] [#22 #53]"; got != want {
 		t.Fatalf("inferred context = %q, want %q", got, want)
+	}
+}
+
+func TestRenderStatuslineScrollsValidUTF8ForAnyEpoch(t *testing.T) {
+	tasks := []Record{
+		{"task_id": "one", "agent": "codex", "repository": "/tmp/first-repository", "created_at": "2"},
+		{"task_id": "two", "agent": "claude", "repository": "/tmp/second-repository", "created_at": "1"},
+	}
+	epochs := []float64{math.NaN(), math.Inf(-1), math.Inf(1)}
+	for epoch := -50.0; epoch <= 50; epoch++ {
+		epochs = append(epochs, epoch)
+	}
+	for _, epoch := range epochs {
+		line := renderStatusline(append([]Record{}, tasks...), "", 24, epoch, "")
+		if !utf8.ValidString(line) {
+			t.Fatalf("epoch %v produced invalid UTF-8: %q", epoch, line)
+		}
+		if got := len([]rune(line)); got != 24 {
+			t.Fatalf("epoch %v produced width %d, want 24: %q", epoch, got, line)
+		}
 	}
 }
