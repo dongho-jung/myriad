@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -93,7 +94,11 @@ func TestCodexAppServerUnixTransport(t *testing.T) {
 		t.Skip("codex is not installed")
 	}
 	socket := filepath.Join(t.TempDir(), "app-server.sock")
-	server, err := spawnCodexServer([]string{"codex", "app-server", "--listen", "unix://" + socket}, os.Environ())
+	serverCommand, err := codexAppServerCommand([]string{"codex"}, socket, true, "/tmp/myriad-protocol-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := spawnCodexServer(serverCommand, os.Environ())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,6 +405,62 @@ func TestCodexSubcommandsMatchCurrentCLI(t *testing.T) {
 		if got := codexSubcommand([]string{"codex", subcommand}); got != subcommand {
 			t.Fatalf("subcommand %q parsed as %q", subcommand, got)
 		}
+	}
+}
+
+func TestCodexRoutingContractMatchesInstalledCLI(t *testing.T) {
+	codex, err := exec.LookPath("codex")
+	if err != nil {
+		t.Skip("codex is not installed")
+	}
+	output, err := exec.Command(codex, "--help").CombinedOutput()
+	if err != nil {
+		t.Fatalf("cannot inspect installed Codex CLI: %v\n%s", err, output)
+	}
+	lines := strings.Split(string(output), "\n")
+	inCommands := false
+	commandsFound := 0
+	commandLine := regexp.MustCompile(`^  ([a-z][a-z0-9-]*)\s{2,}`)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "Commands:" {
+			inCommands = true
+			continue
+		}
+		if !inCommands {
+			continue
+		}
+		if trimmed == "" {
+			break
+		}
+		match := commandLine.FindStringSubmatch(line)
+		if len(match) > 0 {
+			commandsFound++
+			if !codexSubcommands[match[1]] {
+				t.Fatalf("installed Codex command %q has no explicit Myriad routing rule", match[1])
+			}
+		}
+	}
+	if commandsFound == 0 {
+		t.Fatal("could not parse any commands from installed Codex help")
+	}
+
+	valueOption := regexp.MustCompile(`^\s+(?:(-[A-Za-z]), )?(--[a-z0-9-]+) <[^>]+>(?:\.\.\.)?\s*$`)
+	valueOptionsFound := 0
+	for _, line := range lines {
+		match := valueOption.FindStringSubmatch(line)
+		if len(match) == 0 {
+			continue
+		}
+		valueOptionsFound++
+		for _, option := range match[1:3] {
+			if option != "" && !codexGlobalValueOptions[option] {
+				t.Fatalf("installed Codex value option %q is missing from Myriad's argument parser", option)
+			}
+		}
+	}
+	if valueOptionsFound == 0 {
+		t.Fatal("could not parse any value options from installed Codex help")
 	}
 }
 
