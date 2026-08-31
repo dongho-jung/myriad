@@ -44,11 +44,14 @@ func main() {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-	case "commit", "commit-fail", "commit-wait", "commit-publish":
+	case "commit", "commit-fail", "commit-wait", "commit-publish", "commit-publish-wait":
 		if os.Args[1] == "commit-wait" && len(os.Args) < 5 {
 			os.Exit(2)
 		}
 		if os.Args[1] == "commit-publish" && len(os.Args) < 4 {
+			os.Exit(2)
+		}
+		if os.Args[1] == "commit-publish-wait" && len(os.Args) < 6 {
 			os.Exit(2)
 		}
 		path := os.Args[2]
@@ -71,6 +74,23 @@ func main() {
 			_, _ = os.Stdout.Write(output)
 			if err != nil {
 				os.Exit(19)
+			}
+			return
+		}
+		if os.Args[1] == "commit-publish-wait" {
+			if err := os.WriteFile(os.Args[3], []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+				os.Exit(20)
+			}
+			for {
+				if _, err := os.Stat(os.Args[4]); err == nil {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			output, err := exec.Command(os.Args[5], "publish").CombinedOutput()
+			_, _ = os.Stdout.Write(output)
+			if err != nil {
+				os.Exit(21)
 			}
 			return
 		}

@@ -228,12 +228,14 @@ func taskLaunch(store *Store, task Record, command []string, reservation *checko
 		_ = store.Save(task)
 		return 2, err
 	}
-	if !taskWorktreeReady(task) {
-		current, loadErr := store.Load(stringValue(task, "task_id"))
-		if loadErr == nil {
-			task = replaceRecord(task, current)
-		}
+	// Hooks and nested Myriad commands can durably update task metadata while
+	// the foreground agent is running. Reload unconditionally before recording
+	// its exit so the launcher's older snapshot cannot erase those updates.
+	current, loadErr := store.Load(stringValue(task, "task_id"))
+	if loadErr != nil {
+		return result.ExitCode, loadErr
 	}
+	task = replaceRecord(task, current)
 	delete(task, "process")
 	recordAgentExit(task, result.ExitCode, gracefulCodexInterrupt(stringValue(task, "agent"), agentCommand, result.ExitCode))
 	if err := store.Save(task); err != nil {

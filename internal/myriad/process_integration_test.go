@@ -279,6 +279,56 @@ func TestLaterSessionRebasesAfterConcurrentPublish(t *testing.T) {
 	}
 }
 
+func TestLauncherPreservesLivePublishMetadata(t *testing.T) {
+	myriad, helper := testMyriadBinaries(t)
+	repository := testRepository(t)
+	store := testStore(t)
+	root := t.TempDir()
+	ready := filepath.Join(root, "publish-ready")
+	trigger := filepath.Join(root, "publish-trigger")
+	command := exec.Command(myriad, "start", "--agent", "custom", "--task", "preserve-live-publish", "--quiet", "--", helper, "commit-publish-wait", "task-result.txt", ready, trigger, myriad)
+	command.Dir = repository
+	command.Env = os.Environ()
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	defer func() {
+		_ = os.WriteFile(trigger, []byte("publish\n"), 0o600)
+		if !waited {
+			_ = command.Process.Kill()
+			_ = command.Wait()
+		}
+		for _, task := range store.All(false) {
+			owner := recordMap(task, "process")
+			if processAlive(owner) {
+				pid, _ := intValue(owner["pid"])
+				_ = unix.Kill(pid, unix.SIGKILL)
+			}
+		}
+	}()
+	waitForFile(t, ready)
+	target := testCommitFile(t, repository, "target-result.txt", "target\n", "feat: advance target before publish")
+	if err := os.WriteFile(trigger, []byte("publish\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Wait(); err != nil {
+		t.Fatalf("managed publish session failed: %v", err)
+	}
+	waited = true
+	tasks := store.All(true)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1: %s", len(tasks), describe(tasks))
+	}
+	task := tasks[0]
+	if stringValue(task, "status") != StatusIntegrated || stringValue(task, "base_sha") != target {
+		t.Fatalf("launcher overwrote live publish metadata: %s", describe(task))
+	}
+	if stringValue(task, "published_rebased_from_base") == "" {
+		t.Fatal("published rebase origin was not retained")
+	}
+}
+
 func TestProvisioningDoesNotFallBackAfterAppServerFailure(t *testing.T) {
 	myriad, _ := testMyriadBinaries(t)
 	repository := testRepository(t)
