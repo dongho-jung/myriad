@@ -103,6 +103,46 @@ func TestTaskKeepsDotDotPrefixedWorkingDirectory(t *testing.T) {
 	finishTestTask(t, store, task, false)
 }
 
+func TestListedWorktreesPreservesUnusualPaths(t *testing.T) {
+	repository := testRepository(t)
+	path := filepath.Join(t.TempDir(), "worktree\nline")
+	testCommand(t, repository, "git", "worktree", "add", "-q", "-b", "unusual-worktree", path)
+
+	records, err := listedWorktrees(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := canonical(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, record := range records {
+		candidate, candidateErr := canonical(record["worktree"])
+		if candidateErr == nil && candidate == resolved {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("unusual worktree path %q was not parsed: %#v", resolved, records)
+	}
+	registered, err := worktreeRegistered(repository, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !registered {
+		t.Fatal("unusual worktree path was not recognized as registered")
+	}
+	checkout, err := targetCheckout(repository, "unusual-worktree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkout != resolved {
+		t.Fatalf("target checkout = %q, want %q", checkout, resolved)
+	}
+}
+
 func TestTaskIntegratesFastForwardAndCleansUp(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)

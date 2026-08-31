@@ -98,23 +98,25 @@ func repoKey(repository string) (string, error) {
 type worktreeRecord map[string]string
 
 func listedWorktrees(repository string) ([]worktreeRecord, error) {
-	result, err := gitCommand(repository, true, "worktree", "list", "--porcelain")
+	result, err := gitCommand(repository, true, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
 		return nil, err
 	}
 	records := []worktreeRecord{}
 	record := worktreeRecord{}
-	lines := append(strings.Split(result.Stdout, "\n"), "")
-	for _, line := range lines {
-		if line == "" {
+	for _, field := range strings.Split(result.Stdout, "\x00") {
+		if field == "" {
 			if len(record) > 0 {
 				records = append(records, record)
 				record = worktreeRecord{}
 			}
 			continue
 		}
-		key, value, _ := strings.Cut(line, " ")
+		key, value, _ := strings.Cut(field, " ")
 		record[key] = value
+	}
+	if len(record) > 0 {
+		records = append(records, record)
 	}
 	return records, nil
 }
