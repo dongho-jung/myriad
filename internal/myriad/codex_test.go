@@ -7,11 +7,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/sys/unix"
 )
 
 func testCodexRecoveryServer(t *testing.T, socketPath, cwd string, missingRollout bool) <-chan Record {
@@ -144,6 +146,26 @@ func TestStopCodexServerReapsPromptly(t *testing.T) {
 	if !server.reaped {
 		t.Fatal("App Server child was not reaped")
 	}
+}
+
+func TestCodexServerStopsWhenParentDies(t *testing.T) {
+	pidPath := filepath.Join(t.TempDir(), "server.pid")
+	command := exec.Command(os.Args[0], "-test.run=^$")
+	command.Env = append(os.Environ(), "MYRIAD_TEST_CODEX_SERVER_PID_PATH="+pidPath)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("App Server parent failed: %v\n%s", err, output)
+	}
+	waitForFile(t, pidPath)
+	payload, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(payload)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = unix.Kill(-pid, unix.SIGKILL) }()
+	waitForProcessExit(t, pid)
 }
 
 func TestFreshManagedCodexAppServerDoesNotResumeEmptyThread(t *testing.T) {

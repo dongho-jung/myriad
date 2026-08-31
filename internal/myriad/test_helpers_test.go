@@ -8,6 +8,18 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if pidPath := os.Getenv("MYRIAD_TEST_CODEX_SERVER_PID_PATH"); pidPath != "" {
+		server, err := spawnCodexServer([]string{"sleep", "30"}, os.Environ())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", server.Command.Process.Pid)), 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
 	if len(os.Args) > 1 && os.Args[1] == internalValidate {
 		code, err := validationSupervisor(os.Args[2:])
 		if err != nil {
