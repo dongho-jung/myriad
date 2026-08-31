@@ -43,7 +43,7 @@ func main() {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-	case "commit":
+	case "commit", "commit-fail":
 		path := os.Args[2]
 		if err := os.WriteFile(path, []byte("committed by agent\n"), 0o600); err != nil {
 			os.Exit(11)
@@ -56,6 +56,11 @@ func main() {
 				os.Exit(12)
 			}
 		}
+		if os.Args[1] == "commit-fail" {
+			os.Exit(13)
+		}
+	case "noop":
+		return
 	case "attach":
 		if len(os.Args) < 5 {
 			os.Exit(2)

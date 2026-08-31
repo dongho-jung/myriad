@@ -142,6 +142,58 @@ func TestManagedStartIntegratesCommittedResult(t *testing.T) {
 	}
 }
 
+func TestManagedRecoveryIntegratesPreservedCommit(t *testing.T) {
+	myriad, helper := testMyriadBinaries(t)
+	repository := testRepository(t)
+	store := testStore(t)
+	failed := exec.Command(myriad, "start", "--agent", "custom", "--task", "recover-committed-result", "--quiet", "--", helper, "commit-fail", "recovered-result.txt")
+	failed.Dir = repository
+	failed.Env = os.Environ()
+	if output, err := failed.CombinedOutput(); err == nil {
+		t.Fatalf("failing managed agent exited successfully: %s", output)
+	}
+
+	tasks := store.All(true)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1: %s", len(tasks), describe(tasks))
+	}
+	task := tasks[0]
+	if status := stringValue(task, "status"); status != StatusRecovery {
+		t.Fatalf("failed task status = %s, reason = %s", status, stringValue(task, "status_reason"))
+	}
+	result := stringValue(task, "result_commit")
+	if result == "" {
+		t.Fatal("failed agent's committed result was not preserved")
+	}
+	if !branchExists(repository, stringValue(task, "branch")) {
+		t.Fatal("failed agent's committed branch was not preserved")
+	}
+
+	recovered := exec.Command(myriad, "recover", stringValue(task, "task_id"), "--agent", "custom", "--new-session", "--quiet", "--", helper, "noop", "unused")
+	recovered.Dir = repository
+	recovered.Env = os.Environ()
+	if output, err := recovered.CombinedOutput(); err != nil {
+		t.Fatalf("managed recovery failed: %v\n%s", err, output)
+	}
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := stringValue(current, "status"); status != StatusIntegrated {
+		t.Fatalf("recovered task status = %s, reason = %s", status, stringValue(current, "status_reason"))
+	}
+	if got := stringValue(current, "integrated_commit"); got != result {
+		t.Fatalf("integrated commit = %s, preserved result = %s", got, result)
+	}
+	contents, err := os.ReadFile(filepath.Join(repository, "recovered-result.txt"))
+	if err != nil || string(contents) != "committed by agent\n" {
+		t.Fatalf("recovered result was not integrated: %q, %v", contents, err)
+	}
+	if _, err := os.Stat(stringValue(task, "worktree_path")); !os.IsNotExist(err) {
+		t.Fatalf("recovered worktree still exists: %v", err)
+	}
+}
+
 func TestSupervisorKeepsAgentInForegroundProcessGroup(t *testing.T) {
 	myriad, helper := testMyriadBinaries(t)
 	repository := testRepository(t)
