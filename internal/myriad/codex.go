@@ -406,7 +406,12 @@ func materializeCodexHookRuntime(store *Store) (string, error) {
 }
 
 func hookCommand(subcommand, launcher string) string {
-	return displayCommand([]string{launcher, subcommand})
+	values := []string{launcher, subcommand}
+	quoted := make([]string, len(values))
+	for index, value := range values {
+		quoted[index] = "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+	}
+	return strings.Join(quoted, " ")
 }
 
 func codexProvisionHookConfig(launcher string) string {

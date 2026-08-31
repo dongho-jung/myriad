@@ -158,7 +158,7 @@ func TestCodexProvisionServerUsesPinnedHookBypass(t *testing.T) {
 	for _, expected := range []string{
 		"--dangerously-bypass-hook-trust",
 		"hooks.UserPromptSubmit=",
-		"/state/hooks/hash/myriad __provision-hook",
+		hookCommand(internalProvision, "/state/hooks/hash/myriad"),
 		"unix:///tmp/myriad-test.sock",
 	} {
 		if !strings.Contains(joined, expected) {
@@ -167,6 +167,19 @@ func TestCodexProvisionServerUsesPinnedHookBypass(t *testing.T) {
 	}
 	if strings.Contains(joined, "trusted_hash") || strings.Contains(joined, "hooks.state") {
 		t.Fatalf("server command retained brittle hook trust state: %#v", command)
+	}
+}
+
+func TestCodexProvisionHookCommandPreservesShellArguments(t *testing.T) {
+	launcher := filepath.Join(t.TempDir(), "myriad-$HOME-'quoted'")
+	command := exec.Command("sh", "-c", "set -- "+hookCommand(internalProvision, launcher)+`; printf '%s\n%s\n' "$1" "$2"`)
+	output, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := launcher + "\n" + internalProvision + "\n"
+	if string(output) != want {
+		t.Fatalf("hook argv = %q, want %q", output, want)
 	}
 }
 
