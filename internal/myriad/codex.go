@@ -824,7 +824,7 @@ func startCodexAppServer(store *Store, command []string, socketPath string, trus
 	if err != nil {
 		return nil, nil, err
 	}
-	provisionHook := os.Getenv("MYRIAD_HARNESS") == "myriad" && os.Getenv("MYRIAD_TASK_ID") != "" && os.Getenv("MYRIAD_BRANCH") == ""
+	provisionHook := codexProvisionHookRequired()
 	remoteCommand := codexRemoteCommand(agentCommand, socketPath, trustedDirectories, codexRemoteStatusLine(agentCommand, provisionHook))
 	if remoteCommand == nil {
 		return nil, command, nil
@@ -875,6 +875,10 @@ func startCodexAppServer(store *Store, command []string, socketPath string, trus
 		}
 	}
 	return server, remoteCommand, nil
+}
+
+func codexProvisionHookRequired() bool {
+	return os.Getenv("MYRIAD_HARNESS") == "myriad" && os.Getenv("MYRIAD_TASK_ID") != "" && os.Getenv("MYRIAD_BRANCH") == ""
 }
 
 func currentDirectory() string {

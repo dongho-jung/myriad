@@ -194,6 +194,56 @@ func TestManagedRecoveryIntegratesPreservedCommit(t *testing.T) {
 	}
 }
 
+func TestProvisioningDoesNotFallBackAfterAppServerFailure(t *testing.T) {
+	myriad, _ := testMyriadBinaries(t)
+	repository := testRepository(t)
+	store := testStore(t)
+	tools := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "direct-codex-launched")
+	fakeCodex := filepath.Join(tools, "codex")
+	script := `#!/bin/sh
+for argument do
+    if [ "$argument" = app-server ]; then
+        exit 42
+    fi
+done
+printf 'launched\n' >"$MYRIAD_TEST_CODEX_LAUNCHED"
+`
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(myriad, "start", "--agent", "codex", "--task", "incompatible-codex", "--quiet", "--", "codex")
+	command.Dir = repository
+	command.Env = overlayEnvironment(os.Environ(), map[string]string{
+		"PATH":                       tools + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"MYRIAD_TEST_CODEX_LAUNCHED": marker,
+	})
+	if output, err := command.CombinedOutput(); err == nil {
+		t.Fatalf("managed launch ignored App Server failure: %s", output)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("Codex was launched without its provisioning hook: %v", err)
+	}
+	tasks := store.All(true)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1: %s", len(tasks), describe(tasks))
+	}
+	if status := stringValue(tasks[0], "status"); status != StatusRecovery {
+		t.Fatalf("failed provisioning status = %s, reason = %s", status, stringValue(tasks[0], "status_reason"))
+	}
+	refreshInterruptedTasks(store, repository)
+	current, err := store.Load(stringValue(tasks[0], "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := stringValue(current, "status"); status != StatusCompleted {
+		t.Fatalf("empty failed provisioning was not resolved: %s", status)
+	}
+	if _, err := os.Stat(stringValue(current, "worktree_path")); !os.IsNotExist(err) {
+		t.Fatalf("resolved provisioning failure left a reserved worktree: %v", err)
+	}
+}
+
 func TestSupervisorKeepsAgentInForegroundProcessGroup(t *testing.T) {
 	myriad, helper := testMyriadBinaries(t)
 	repository := testRepository(t)

@@ -50,12 +50,16 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 
 	var control *codexServer
 	if controlSocket != "" {
+		provisionRequired := codexProvisionHookRequired()
 		server, transformed, startErr := startCodexAppServer(
 			store, command, controlSocket,
 			[]string{currentDirectory(), workingDirectory}, os.Environ(),
 		)
 		if startErr != nil {
 			_ = updateSessionMetadata(sessionPath, sessionID, Record{"control_status": "unavailable", "control_error": startErr.Error()})
+			if provisionRequired {
+				return 127, fail("Codex provisioning bridge is unavailable; refusing to launch in the original checkout: %v", startErr)
+			}
 			fmt.Fprintf(os.Stderr, "myriad: Codex notification bridge unavailable: %v\n", startErr)
 		} else if server != nil {
 			control = server
