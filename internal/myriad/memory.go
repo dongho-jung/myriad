@@ -62,7 +62,14 @@ func memoryBytes(value Record) ([]byte, error) {
 	if err := validateMemory(value); err != nil {
 		return nil, err
 	}
-	return marshalPrivate(value)
+	payload, err := marshalPrivate(value)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > maxMemoryBytes {
+		return nil, fail("%s is too large: %d bytes (maximum %d)", MemoryName, len(payload), maxMemoryBytes)
+	}
+	return payload, nil
 }
 
 func writeMemory(path string, value Record) error {
@@ -307,6 +314,10 @@ func applyMemoryUpdate(store *Store, task Record) error {
 	}
 	if err := validateMemory(merged); err != nil {
 		return err
+	}
+	if _, err := memoryBytes(merged); err != nil {
+		raw, _ := json.Marshal(proposed)
+		return archiveMemoryProposal(store, task, "merged repository memory cannot be stored: "+err.Error(), raw)
 	}
 	if err := writeMemory(canonicalPath, merged); err != nil {
 		return err

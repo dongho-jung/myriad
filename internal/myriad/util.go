@@ -213,6 +213,9 @@ func atomicWrite(path string, payload []byte, mode os.FileMode) error {
 			_ = os.Remove(temporary)
 		}
 	}()
+	if err := unix.Fchmod(fd, uint32(mode.Perm())); err != nil {
+		return err
+	}
 	if _, err := file.Write(payload); err != nil {
 		return err
 	}

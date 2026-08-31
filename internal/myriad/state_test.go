@@ -4,8 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestDecodeJSONRejectsTrailingDocument(t *testing.T) {
@@ -39,6 +42,69 @@ func TestReadRegularRejectsSymlink(t *testing.T) {
 	}
 	if _, err := readRegular(link, 1024); err == nil {
 		t.Fatal("symlink state file was accepted")
+	}
+}
+
+func TestAtomicWriteSetsModeDespiteRestrictiveUmask(t *testing.T) {
+	root := t.TempDir()
+	previous := unix.Umask(0o777)
+	defer unix.Umask(previous)
+	path := filepath.Join(root, "private.json")
+	if err := atomicWrite(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("atomic file mode = %04o, want 0600", got)
+	}
+}
+
+func TestWriteMemoryRejectsOversizedPayload(t *testing.T) {
+	value := memoryTemplate("main")
+	recordMap(value, "memories")["oversized"] = Record{"summary": strings.Repeat("x", maxMemoryBytes)}
+	path := filepath.Join(t.TempDir(), MemoryName)
+	if err := writeMemory(path, value); err == nil {
+		t.Fatal("oversized repository memory was written")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("oversized repository memory left a file behind: %v", err)
+	}
+}
+
+func TestMemoryMergeArchivesOversizedResult(t *testing.T) {
+	store := testStore(t)
+	base := memoryTemplate("main")
+	current := cloneRecord(base)
+	recordMap(current, "memories")["current"] = Record{"summary": strings.Repeat("c", 600_000)}
+	proposed := cloneRecord(base)
+	recordMap(proposed, "memories")["proposed"] = Record{"summary": strings.Repeat("p", 600_000)}
+	canonicalPath := filepath.Join(t.TempDir(), MemoryName)
+	if err := writeMemory(canonicalPath, current); err != nil {
+		t.Fatal(err)
+	}
+	task := Record{
+		"task_id": "oversized-memory-merge", "memory_path": canonicalPath,
+		"memory_update": Record{"base": base, "proposed": proposed},
+	}
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyMemoryUpdate(store, task); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := readMemory(canonicalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memories := recordMap(stored, "memories")
+	if memories["current"] == nil || memories["proposed"] != nil {
+		t.Fatal("oversized merge changed canonical repository memory")
+	}
+	if recordMap(task, "memory_update") != nil || stringValue(task, "memory_warning") == "" {
+		t.Fatalf("oversized merge was not archived: %s", describe(task))
 	}
 }
 
