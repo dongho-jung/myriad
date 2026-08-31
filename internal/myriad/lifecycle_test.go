@@ -113,6 +113,60 @@ func TestCleanupRecordsBranchDeletionFailure(t *testing.T) {
 	}
 }
 
+func TestQuarantinePreservesPathWhenGitInspectionFails(t *testing.T) {
+	store := testStore(t)
+	path := filepath.Join(t.TempDir(), "candidate")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	task := Record{
+		"task_id":    "inspection-failure",
+		"repository": filepath.Join(t.TempDir(), "missing-repository"),
+	}
+
+	if _, err := quarantineUnregisteredWorktree(store, task, path); err == nil {
+		t.Fatal("quarantine accepted a failed Git registration inspection")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("candidate path was moved after inspection failure: %v", err)
+	}
+}
+
+func TestCleanupPreservesInaccessibleManagedPath(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	path := stringValue(task, "worktree_path")
+	branch := stringValue(task, "branch")
+	testCommand(t, repository, "git", "worktree", "unlock", path)
+	testCommand(t, repository, "git", "worktree", "remove", path)
+	if err := os.Symlink(filepath.Base(path), path); err != nil {
+		t.Fatal(err)
+	}
+	task["status"] = StatusCompleted
+
+	cleaned, err := cleanupTaskReserved(store, task)
+	if err == nil {
+		t.Fatal("cleanup ignored an inaccessible managed path")
+	}
+	if cleaned {
+		t.Fatal("cleanup reported success for an inaccessible managed path")
+	}
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("managed path was removed after stat failure: %v", err)
+	}
+	if !branchExists(repository, branch) {
+		t.Fatal("task branch was deleted after stat failure")
+	}
+}
+
+func TestForbiddenPathInspectionRejectsInvalidCommit(t *testing.T) {
+	repository := testRepository(t)
+	if _, err := commitTracksForbiddenPaths(repository, "missing-commit"); err == nil {
+		t.Fatal("forbidden-path inspection accepted an invalid commit")
+	}
+}
+
 func TestTaskRebasesOntoAdvancedTarget(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)

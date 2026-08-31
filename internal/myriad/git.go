@@ -115,19 +115,19 @@ func targetCheckout(repository, branch string) (string, error) {
 	return "", nil
 }
 
-func worktreeRegistered(repository, path string) bool {
+func worktreeRegistered(repository, path string) (bool, error) {
 	records, err := listedWorktrees(repository)
 	if err != nil {
-		return false
+		return false, err
 	}
 	expected, _ := canonical(path)
 	for _, record := range records {
 		candidate, _ := canonical(record["worktree"])
 		if candidate == expected {
-			return true
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
 type changes struct {
@@ -198,15 +198,21 @@ func availableTaskBranch(repository, slug string) string {
 	}
 }
 
-func commitTracksForbiddenPaths(repository, commit string) []string {
+func commitTracksForbiddenPaths(repository, commit string) ([]string, error) {
 	result := []string{}
 	for _, path := range forbiddenLocalPaths {
-		probe, _ := gitCommand(repository, false, "cat-file", "-e", commit+":"+path)
-		if probe.ExitCode == 0 {
+		probe, err := gitCommand(repository, false, "ls-tree", "--name-only", commit, "--", path)
+		if err != nil {
+			return nil, err
+		}
+		if probe.ExitCode != 0 {
+			return nil, fail("cannot inspect forbidden path %s in commit %s", path, commit)
+		}
+		if strings.TrimSpace(probe.Stdout) != "" {
 			result = append(result, path)
 		}
 	}
-	return result
+	return result, nil
 }
 
 func forbiddenHistory(repository, resultCommit, excludedCommit string) ([]Record, error) {
@@ -216,7 +222,10 @@ func forbiddenHistory(repository, resultCommit, excludedCommit string) ([]Record
 	}
 	findings := []Record{}
 	for _, commit := range strings.Fields(listed.Stdout) {
-		paths := commitTracksForbiddenPaths(repository, commit)
+		paths, err := commitTracksForbiddenPaths(repository, commit)
+		if err != nil {
+			return nil, err
+		}
 		if len(paths) > 0 {
 			values := make([]any, len(paths))
 			for index, path := range paths {

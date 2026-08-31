@@ -62,7 +62,11 @@ func createTask(store *Store, options createTaskOptions) (Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	if tracked := commitTracksForbiddenPaths(repository, base); len(tracked) > 0 {
+	tracked, err := commitTracksForbiddenPaths(repository, base)
+	if err != nil {
+		return nil, err
+	}
+	if len(tracked) > 0 {
 		return nil, fail("machine-local paths are tracked on target branch %s: %s", target, strings.Join(tracked, ", "))
 	}
 	taskID, err := formatTaskID()
@@ -223,7 +227,10 @@ func provisionTaskWorktreeReserved(store *Store, task Record, slug string) (stri
 	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return "", err
 	}
-	probe, _ := gitCommand(path, false, "rev-parse", "--is-inside-work-tree")
+	probe, err := gitCommand(path, false, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		return "", err
+	}
 	if probe.ExitCode == 0 {
 		current, err := gitCommand(path, true, "branch", "--show-current")
 		if err != nil {
@@ -291,7 +298,10 @@ func recreateWorktree(store *Store, task Record) error {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			return err
 		}
-		probe, _ := gitCommand(path, false, "rev-parse", "--is-inside-work-tree")
+		probe, err := gitCommand(path, false, "rev-parse", "--is-inside-work-tree")
+		if err != nil {
+			return err
+		}
 		if probe.ExitCode != 0 {
 			return nil
 		}
@@ -310,12 +320,18 @@ func recreateWorktree(store *Store, task Record) error {
 		return store.Save(task)
 	}
 	if _, err := os.Stat(path); err == nil {
-		if worktreeRegistered(repository, path) {
+		registered, inspectErr := worktreeRegistered(repository, path)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if registered {
 			return nil
 		}
 		if _, err := quarantineUnregisteredWorktree(store, task, path); err != nil {
 			return err
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	branch := stringValue(task, "branch")
 	if !branchExists(repository, branch) {
@@ -330,7 +346,9 @@ func recreateWorktree(store *Store, task Record) error {
 	if _, err := gitCommand(repository, true, "-c", "core.hooksPath=/dev/null", "worktree", "add", path, branch); err != nil {
 		return err
 	}
-	_, _ = gitCommand(repository, false, "worktree", "lock", "--reason", "myriad:"+stringValue(task, "task_id"), path)
+	if _, err := gitCommand(repository, true, "worktree", "lock", "--reason", "myriad:"+stringValue(task, "task_id"), path); err != nil {
+		return err
+	}
 	if stringValue(task, "memory_path") != "" {
 		if update := recordMap(task, "memory_update"); update != nil {
 			base := recordMap(update, "base")
@@ -355,7 +373,11 @@ func recreateWorktree(store *Store, task Record) error {
 }
 
 func quarantineUnregisteredWorktree(store *Store, task Record, path string) (string, error) {
-	if worktreeRegistered(stringValue(task, "repository"), path) {
+	registered, err := worktreeRegistered(stringValue(task, "repository"), path)
+	if err != nil {
+		return "", err
+	}
+	if registered {
 		return "", fail("refused to quarantine registered worktree: %s", path)
 	}
 	random, err := randomHex(4)
@@ -383,8 +405,11 @@ func cleanupTask(store *Store, task Record, repositoryReserved, checkoutReserved
 	if !taskWorktreeReady(task) {
 		return cleanupTaskReserved(store, task)
 	}
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return cleanupTaskReserved(store, task)
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return cleanupTaskReserved(store, task)
+		}
+		return false, err
 	}
 	repository := stringValue(task, "repository")
 	var activity *fileLock
@@ -418,8 +443,13 @@ func cleanupTaskReserved(store *Store, task Record) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	info, statErr := os.Stat(path)
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return false, statErr
+	}
+	exists := statErr == nil
 	changed := false
-	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() && !taskWorktreeReady(task) {
+	if exists && info.IsDir() && !taskWorktreeReady(task) {
 		entries, readErr := os.ReadDir(path)
 		if readErr != nil {
 			return false, readErr
@@ -433,21 +463,29 @@ func cleanupTaskReserved(store *Store, task Record) (bool, error) {
 		}
 		task["worktree_cleaned_at"] = now()
 		changed = true
+		exists = false
 	}
 	repository := stringValue(task, "repository")
-	if _, statErr := os.Stat(path); statErr == nil && taskWorktreeReady(task) && !worktreeRegistered(repository, path) {
-		destination, err := quarantineUnregisteredWorktree(store, task, path)
+	if exists && taskWorktreeReady(task) {
+		registered, err := worktreeRegistered(repository, path)
 		if err != nil {
 			return false, err
 		}
-		changed = true
-		status := stringValue(task, "status")
-		if status != StatusIntegrated && status != StatusCompleted && status != StatusFailed {
-			_ = setStatus(store, task, StatusRecovery, "unregistered worktree preserved in quarantine: "+destination)
-			return false, nil
+		if !registered {
+			destination, err := quarantineUnregisteredWorktree(store, task, path)
+			if err != nil {
+				return false, err
+			}
+			changed = true
+			exists = false
+			status := stringValue(task, "status")
+			if status != StatusIntegrated && status != StatusCompleted && status != StatusFailed {
+				_ = setStatus(store, task, StatusRecovery, "unregistered worktree preserved in quarantine: "+destination)
+				return false, nil
+			}
 		}
 	}
-	if _, statErr := os.Stat(path); statErr == nil {
+	if exists {
 		changes, err := worktreeChanges(path)
 		if err != nil {
 			return false, err
@@ -476,14 +514,22 @@ func cleanupTaskReserved(store *Store, task Record) (bool, error) {
 				sample = append(sample, strings.TrimSpace(strings.TrimPrefix(line, "!!")))
 			}
 			task["discarded_ignored_artifacts"] = Record{"count": len(changes.Ignored), "sample": sample}
-			cleaned, _ := gitCommand(path, false, "clean", "-ff", "-d", "-X")
+			cleaned, err := gitCommand(path, false, "clean", "-ff", "-d", "-X")
+			if err != nil {
+				return false, err
+			}
 			if cleaned.ExitCode != 0 {
 				_ = setStatus(store, task, StatusRecovery, "ignored artifact cleanup failed: "+strings.TrimSpace(cleaned.Stderr))
 				return false, nil
 			}
 		}
-		_, _ = gitCommand(repository, false, "worktree", "unlock", path)
-		removed, _ := gitCommand(repository, false, "worktree", "remove", path)
+		if _, err := gitCommand(repository, false, "worktree", "unlock", path); err != nil {
+			return false, err
+		}
+		removed, err := gitCommand(repository, false, "worktree", "remove", path)
+		if err != nil {
+			return false, err
+		}
 		if removed.ExitCode != 0 {
 			_, _ = gitCommand(repository, false, "worktree", "lock", "--reason", "myriad:"+stringValue(task, "task_id"), path)
 			_ = setStatus(store, task, StatusRecovery, "worktree removal failed: "+strings.TrimSpace(removed.Stderr))
@@ -491,8 +537,11 @@ func cleanupTaskReserved(store *Store, task Record) (bool, error) {
 		}
 		task["worktree_cleaned_at"] = now()
 		changed = true
+		exists = false
 	}
-	_ = os.RemoveAll(filepath.Join(store.Scratch, stringValue(task, "task_id")))
+	if err := os.RemoveAll(filepath.Join(store.Scratch, stringValue(task, "task_id"))); err != nil {
+		return false, err
+	}
 	if stringValue(task, "integrated_commit") != "" || stringValue(task, "status") == StatusCompleted {
 		if err := applyMemoryUpdate(store, task); err != nil {
 			return false, err
@@ -563,7 +612,12 @@ func inspectResult(store *Store, task Record, trustCleanCommit bool) error {
 		_, err := cleanupTask(store, task, false, false)
 		return err
 	}
-	if _, statErr := os.Stat(path); statErr == nil {
+	_, statErr := os.Stat(path)
+	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	worktreeExists := statErr == nil
+	if worktreeExists {
 		changes, err := worktreeChanges(path)
 		if err != nil {
 			return err
@@ -571,14 +625,17 @@ func inspectResult(store *Store, task Record, trustCleanCommit bool) error {
 		if len(changes.Normal) > 0 {
 			return setStatus(store, task, StatusRecovery, "uncommitted work preserved in "+path)
 		}
-		branch, _ := gitCommand(path, true, "branch", "--show-current")
+		branch, err := gitCommand(path, true, "branch", "--show-current")
+		if err != nil {
+			return err
+		}
 		if strings.TrimSpace(branch.Stdout) != stringValue(task, "branch") {
 			return setStatus(store, task, StatusRecovery, "unexpected branch preserved: "+strings.TrimSpace(branch.Stdout))
 		}
 	}
 	head := currentHead(task)
 	if head == "" || head == stringValue(task, "base_sha") {
-		if _, statErr := os.Stat(path); statErr == nil {
+		if worktreeExists {
 			if err := captureMemoryProposal(store, task); err != nil {
 				return err
 			}
@@ -621,7 +678,7 @@ func inspectResult(store *Store, task Record, trustCleanCommit bool) error {
 		return err
 	}
 	delete(task, "forbidden_history")
-	if _, statErr := os.Stat(path); statErr == nil {
+	if worktreeExists {
 		if err := captureMemoryProposal(store, task); err != nil {
 			return err
 		}
