@@ -106,6 +106,42 @@ func TestSupervisorStopsDetachedDescendantBeforeReturning(t *testing.T) {
 	}
 }
 
+func TestManagedStartIntegratesCommittedResult(t *testing.T) {
+	myriad, helper := testMyriadBinaries(t)
+	repository := testRepository(t)
+	store := testStore(t)
+	command := exec.Command(myriad, "start", "--agent", "custom", "--task", "complete-primary-lifecycle", "--quiet", "--", helper, "commit", "agent-result.txt")
+	command.Dir = repository
+	command.Env = os.Environ()
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("managed start failed: %v\n%s", err, output)
+	}
+
+	contents, err := os.ReadFile(filepath.Join(repository, "agent-result.txt"))
+	if err != nil || string(contents) != "committed by agent\n" {
+		t.Fatalf("managed result was not integrated: %q, %v", contents, err)
+	}
+	tasks := store.All(true)
+	if len(tasks) != 1 {
+		t.Fatalf("task count = %d, want 1: %s", len(tasks), describe(tasks))
+	}
+	task := tasks[0]
+	if status := stringValue(task, "status"); status != StatusIntegrated {
+		t.Fatalf("task status = %s, reason = %s", status, stringValue(task, "status_reason"))
+	}
+	if integrated := stringValue(task, "integrated_commit"); integrated == "" {
+		t.Fatal("task did not record its integrated commit")
+	} else if head, _ := gitRef(repository, "refs/heads/main"); head != integrated {
+		t.Fatalf("main = %s, integrated commit = %s", head, integrated)
+	}
+	if _, err := os.Stat(stringValue(task, "worktree_path")); !os.IsNotExist(err) {
+		t.Fatalf("managed worktree still exists: %v", err)
+	}
+	if branchExists(repository, stringValue(task, "branch")) {
+		t.Fatal("integrated task branch still exists")
+	}
+}
+
 func TestSupervisorKeepsAgentInForegroundProcessGroup(t *testing.T) {
 	myriad, helper := testMyriadBinaries(t)
 	repository := testRepository(t)
