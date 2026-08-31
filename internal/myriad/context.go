@@ -136,23 +136,34 @@ func normalizeTaskContext(context Record) error {
 	return nil
 }
 
-func readTaskContext(store *Store, taskID string) Record {
+func loadTaskContext(store *Store, taskID string) (Record, error) {
 	path, err := store.ContextPath(taskID)
 	if err != nil {
-		return Record{}
+		return nil, err
 	}
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
-		return Record{}
+	if _, err := os.Lstat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Record{}, nil
+		}
+		return nil, err
 	}
 	var value Record
 	if err := readJSON(path, maxJSONBytes, &value); err != nil {
-		return Record{}
+		return nil, fail("cannot safely read task context %s: %v", path, err)
 	}
 	schema, ok := intValue(value["schema_version"])
 	if !ok || schema != ContextSchema || stringValue(value, "task_id") != taskID {
-		return Record{}
+		return nil, fail("invalid task context: %s", path)
 	}
 	if err := normalizeTaskContext(value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func readTaskContext(store *Store, taskID string) Record {
+	value, err := loadTaskContext(store, taskID)
+	if err != nil {
 		return Record{}
 	}
 	return value

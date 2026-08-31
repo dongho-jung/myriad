@@ -237,6 +237,58 @@ func TestTaskContextRejectsOversizedPayload(t *testing.T) {
 	}
 }
 
+func TestContextCommandPreservesCorruptState(t *testing.T) {
+	store := testStore(t)
+	taskID := "corrupt-context"
+	if err := store.Save(Record{"task_id": taskID}); err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.ContextPath(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("{\"schema_version\":1")
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := contextCommand(store, taskID, []string{"TEST-1"}, nil, false, false); err == nil {
+		t.Fatal("context command overwrote corrupt state")
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(current, payload) {
+		t.Fatalf("corrupt context changed from %q to %q", payload, current)
+	}
+}
+
+func TestContextCommandPreservesMismatchedState(t *testing.T) {
+	store := testStore(t)
+	taskID := "expected-context"
+	if err := store.Save(Record{"task_id": taskID}); err != nil {
+		t.Fatal(err)
+	}
+	path, err := store.ContextPath(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"schema_version":1,"task_id":"other-context"}`)
+	if err := os.WriteFile(path, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := contextCommand(store, taskID, nil, []string{"123"}, false, false); err == nil {
+		t.Fatal("context command overwrote mismatched state")
+	}
+	current, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(current, payload) {
+		t.Fatalf("mismatched context changed from %q to %q", payload, current)
+	}
+}
+
 func TestHandoffSignalFailureRestoresPendingEvent(t *testing.T) {
 	store := testStore(t)
 	repository := testRepository(t)

@@ -470,7 +470,10 @@ func contextCommand(store *Store, taskID string, jira, pullRequests []string, cl
 		return err
 	}
 	defer func() { _ = lock.Unlock() }()
-	context := readTaskContext(store, taskID)
+	context, err := loadTaskContext(store, taskID)
+	if err != nil {
+		return err
+	}
 	action := ""
 	if clearJira {
 		context["jira_issues"] = []string{}
