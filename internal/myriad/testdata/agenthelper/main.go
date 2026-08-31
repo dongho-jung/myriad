@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -61,6 +62,37 @@ func main() {
 		}
 	case "noop":
 		return
+	case "interrupt-hook":
+		if len(os.Args) < 4 {
+			os.Exit(2)
+		}
+		signals := make(chan os.Signal, 2)
+		signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(signals)
+		stdinClosed := make(chan struct{})
+		go func() {
+			_, _ = io.Copy(io.Discard, os.Stdin)
+			close(stdinClosed)
+		}()
+		if err := os.WriteFile(os.Args[2], []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			os.Exit(14)
+		}
+		<-signals
+		hook := exec.Command(os.Args[0], "hook-child", os.Args[3])
+		if err := hook.Start(); err != nil {
+			os.Exit(15)
+		}
+		_ = hook.Process.Release()
+		select {
+		case <-signals:
+		case <-stdinClosed:
+		}
+	case "hook-child":
+		signal.Ignore(syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+		if err := os.WriteFile(os.Args[2], []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+			os.Exit(16)
+		}
+		select {}
 	case "attach":
 		if len(os.Args) < 5 {
 			os.Exit(2)

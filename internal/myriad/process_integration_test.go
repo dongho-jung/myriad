@@ -244,6 +244,83 @@ printf 'launched\n' >"$MYRIAD_TEST_CODEX_LAUNCHED"
 	}
 }
 
+func TestRepeatedInterruptOrEOFDuringHookCleansUp(t *testing.T) {
+	myriad, helper := testMyriadBinaries(t)
+	for _, termination := range []string{"interrupt", "eof"} {
+		t.Run(termination, func(t *testing.T) {
+			repository := testRepository(t)
+			store := testStore(t)
+			root := t.TempDir()
+			agentReady := filepath.Join(root, "agent-ready")
+			hookPIDPath := filepath.Join(root, "hook.pid")
+			stdin, input, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := exec.Command(myriad, "start", "--agent", "custom", "--task", "interrupt-hook-"+termination, "--quiet", "--", helper, "interrupt-hook", agentReady, hookPIDPath)
+			command.Dir = repository
+			command.Env = os.Environ()
+			command.Stdin = stdin
+			command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			if err := command.Start(); err != nil {
+				_ = stdin.Close()
+				_ = input.Close()
+				t.Fatal(err)
+			}
+			_ = stdin.Close()
+			waited := false
+			defer func() {
+				_ = input.Close()
+				if !waited {
+					_ = unix.Kill(-command.Process.Pid, unix.SIGKILL)
+					_ = command.Wait()
+				}
+			}()
+
+			waitForFile(t, agentReady)
+			if err := unix.Kill(-command.Process.Pid, unix.SIGINT); err != nil {
+				t.Fatal(err)
+			}
+			waitForFile(t, hookPIDPath)
+			raw, err := os.ReadFile(hookPIDPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hookPID, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if termination == "interrupt" {
+				if err := unix.Kill(-command.Process.Pid, unix.SIGINT); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := input.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			done := make(chan error, 1)
+			go func() { done <- command.Wait() }()
+			select {
+			case err := <-done:
+				waited = true
+				if err != nil {
+					t.Fatalf("managed session did not exit cleanly: %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("managed session did not finish after repeated termination input")
+			}
+			waitForProcessExit(t, hookPID)
+			tasks := store.All(true)
+			if len(tasks) != 1 || stringValue(tasks[0], "status") != StatusCompleted {
+				t.Fatalf("unexpected task result: %s", describe(tasks))
+			}
+			if _, err := os.Stat(stringValue(tasks[0], "worktree_path")); !os.IsNotExist(err) {
+				t.Fatalf("completed interrupted worktree still exists: %v", err)
+			}
+		})
+	}
+}
+
 func TestSupervisorKeepsAgentInForegroundProcessGroup(t *testing.T) {
 	myriad, helper := testMyriadBinaries(t)
 	repository := testRepository(t)
