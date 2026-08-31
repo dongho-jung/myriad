@@ -236,6 +236,50 @@ func TestCodexProvisionHookCommandPreservesShellArguments(t *testing.T) {
 	}
 }
 
+func TestCodexHookRuntimeRejectsSymlink(t *testing.T) {
+	store := testStore(t)
+	executable, err := executablePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(store.HookRuntimes, sha256Hex(payload))
+	if err := ensurePrivateDirectory(directory); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(executable, filepath.Join(directory, "myriad")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := materializeCodexHookRuntime(store); err == nil {
+		t.Fatal("symlink hook runtime was trusted")
+	}
+}
+
+func TestCodexHookRuntimeRestoresExecutableMode(t *testing.T) {
+	store := testStore(t)
+	path, err := materializeCodexHookRuntime(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path, err = materializeCodexHookRuntime(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("hook runtime mode = %04o, want 0700", info.Mode().Perm())
+	}
+}
+
 func TestCodexTUICommandOmitsUnmanagedThreadTitle(t *testing.T) {
 	command := codexTUICommand(nil, "/project")
 	joined := strings.Join(command, "\n")

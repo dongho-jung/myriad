@@ -424,15 +424,21 @@ func materializeCodexHookRuntime(store *Store) (string, error) {
 		return "", err
 	}
 	destination := filepath.Join(runtimeDirectory, "myriad")
-	if existing, err := os.ReadFile(destination); err == nil {
+	if existing, err := readRegular(destination, int64(len(payload))); err == nil {
 		if !bytes.Equal(existing, payload) {
 			return "", fail("immutable hook runtime changed unexpectedly: %s", destination)
 		}
-	} else if errors.Is(err, os.ErrNotExist) {
-		if err := atomicWrite(destination, payload, 0o700); err != nil {
+		info, err := os.Lstat(destination)
+		if err != nil {
 			return "", err
 		}
-		if err := os.Chmod(destination, 0o700); err != nil {
+		if info.Mode().Perm() != 0o700 {
+			if err := atomicWrite(destination, payload, 0o700); err != nil {
+				return "", err
+			}
+		}
+	} else if errors.Is(err, os.ErrNotExist) {
+		if err := atomicWrite(destination, payload, 0o700); err != nil {
 			return "", err
 		}
 	} else {
