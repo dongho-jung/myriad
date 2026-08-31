@@ -179,6 +179,110 @@ func TestConcurrentTaskCreationIsSerialized(t *testing.T) {
 	}
 }
 
+func TestReconcileRetriesInterruptedIntegration(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	result := testCommitFile(t, stringValue(task, "worktree_path"), "task.txt", "result\n", "feat: add interrupted result")
+	targetBefore, err := gitRef(repository, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := repoKey(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := filepath.Join(store.Integrations, key, stringValue(task, "task_id"))
+	if err := os.MkdirAll(filepath.Dir(candidate), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	testCommand(t, repository, "git", "worktree", "add", "--detach", "-q", candidate, result)
+	task["result_commit"] = result
+	task["integration_candidate"] = candidate
+	task["status"] = StatusValidating
+	delete(task, "process")
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := reconcile(store, false, true); code != 0 {
+		t.Fatalf("non-integrating reconcile exit code = %d, want 0", code)
+	}
+	queued, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := stringValue(queued, "status"); status != StatusReady {
+		t.Fatalf("interrupted integration status = %s, want %s", status, StatusReady)
+	}
+	if stringValue(queued, "integration_candidate") != "" || queued["integration_process"] != nil || queued["validation_process"] != nil {
+		t.Fatalf("interrupted integration state was not cleared: %s", describe(queued))
+	}
+	if _, err := os.Stat(candidate); !os.IsNotExist(err) {
+		t.Fatalf("stale integration candidate still exists: %v", err)
+	}
+	if target, _ := gitRef(repository, "refs/heads/main"); target != targetBefore {
+		t.Fatalf("non-integrating reconcile changed target: %s -> %s", targetBefore, target)
+	}
+
+	if code := reconcile(store, true, true); code != 0 {
+		t.Fatalf("integration retry exit code = %d, want 0", code)
+	}
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := stringValue(current, "status"); status != StatusIntegrated {
+		t.Fatalf("retried integration status = %s, reason = %s", status, stringValue(current, "status_reason"))
+	}
+	if target, _ := gitRef(repository, "refs/heads/main"); target != result {
+		t.Fatalf("retried integration target = %s, want %s", target, result)
+	}
+}
+
+func TestReconcileRecognizesInterruptedTargetAdvance(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	result := testCommitFile(t, stringValue(task, "worktree_path"), "task.txt", "result\n", "feat: add advanced result")
+	testCommand(t, repository, "git", "merge", "--ff-only", "-q", result)
+	key, err := repoKey(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate := filepath.Join(store.Integrations, key, stringValue(task, "task_id"))
+	if err := os.MkdirAll(filepath.Dir(candidate), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	testCommand(t, repository, "git", "worktree", "add", "--detach", "-q", candidate, result)
+	task["result_commit"] = result
+	task["integration_candidate"] = candidate
+	task["status"] = StatusIntegrating
+	delete(task, "process")
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := reconcile(store, true, true); code != 0 {
+		t.Fatalf("reconcile exit code = %d, want 0", code)
+	}
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := stringValue(current, "status"); status != StatusIntegrated {
+		t.Fatalf("recognized integration status = %s, reason = %s", status, stringValue(current, "status_reason"))
+	}
+	if got := stringValue(current, "integrated_commit"); got != result {
+		t.Fatalf("recognized integrated commit = %s, want %s", got, result)
+	}
+	for _, path := range []string{candidate, stringValue(task, "worktree_path")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("reconciled worktree still exists at %s: %v", path, err)
+		}
+	}
+}
+
 func TestRecoveryPreparationHonorsCheckoutLease(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)
