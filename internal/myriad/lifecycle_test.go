@@ -379,6 +379,33 @@ func TestValidationMutationBlocksIntegration(t *testing.T) {
 	}
 }
 
+func TestValidationDetectsQuotedTerraformPath(t *testing.T) {
+	repository := testRepository(t)
+	target, err := gitRef(repository, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "directory\nmodule.tf"
+	if err := os.WriteFile(filepath.Join(repository, path), []byte("terraform {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testCommand(t, repository, "git", "add", "--", path)
+	testCommand(t, repository, "git", "commit", "-q", "-m", "test: add unusual terraform path")
+	tools := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tools, "terraform"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", tools+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	commands, _, err := validationCommands(Record{"worktree_path": repository, "workdir_relative": "."}, repository, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(commands) != 1 || len(commands[0]) < 2 || commands[0][0] != "terraform" || commands[0][1] != "fmt" {
+		t.Fatalf("Terraform validation was not selected: %#v", commands)
+	}
+}
+
 func TestForbiddenMemoryInIntermediateCommitIsRejected(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)

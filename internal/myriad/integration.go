@@ -93,12 +93,12 @@ func validationCommands(task Record, candidate, targetSHA string) ([][]string, [
 		commands = append(commands, arguments)
 		directories = append(directories, workingDirectory)
 	}
-	changed, err := gitCommand(candidate, true, "diff", "--name-only", targetSHA+"..HEAD")
+	changed, err := gitCommand(candidate, true, "diff", "--name-only", "-z", targetSHA+"..HEAD")
 	if err != nil {
 		return nil, nil, err
 	}
 	terraformChanged := false
-	for _, path := range strings.Fields(changed.Stdout) {
+	for _, path := range strings.Split(changed.Stdout, "\x00") {
 		if strings.HasSuffix(path, ".tf") {
 			terraformChanged = true
 			break
