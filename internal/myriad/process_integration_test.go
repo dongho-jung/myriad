@@ -931,6 +931,32 @@ func TestValidationDoesNotReadInteractiveTerminal(t *testing.T) {
 	}
 }
 
+func TestStoppedValidationFailsPromptly(t *testing.T) {
+	_, helper := testMyriadBinaries(t)
+	repository := testRepository(t)
+	store := testStore(t)
+	check := displayCommand([]string{helper, "stop-group", "unused"})
+	task := testTask(t, store, repository, createTaskOptions{Checks: []string{check}, CheckTimeout: 60})
+	testCommitFile(t, stringValue(task, "worktree_path"), "task.txt", "task\n", "feat: add stopped validation result")
+
+	started := time.Now()
+	current := finishTestTask(t, store, task, true)
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("stopped validation took %s to fail", elapsed)
+	}
+	if status := stringValue(current, "status"); status != StatusRecovery {
+		t.Fatalf("status = %s, want %s", status, StatusRecovery)
+	}
+	failure := recordMap(current, "validation_failure")
+	if reason := stringValue(failure, "reason"); !strings.Contains(reason, "stopped by job control") {
+		t.Fatalf("unexpected validation failure: %s", describe(failure))
+	}
+	attempts := recordSlice(current, "validation_attempts")
+	if len(attempts) != 1 || stringValue(anyRecord(attempts[0]), "outcome") != "stopped" {
+		t.Fatalf("stopped attempt was not retained: %s", describe(attempts))
+	}
+}
+
 func TestValidationTimeoutPreservesResult(t *testing.T) {
 	_, helper := testMyriadBinaries(t)
 	repository := testRepository(t)

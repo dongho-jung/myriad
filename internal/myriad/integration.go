@@ -59,6 +59,7 @@ func (writer *tailWriter) snapshot() (string, bool) {
 type validationProcessResult struct {
 	WaitErr         error
 	TimedOut        bool
+	Stopped         bool
 	StdoutTail      string
 	StderrTail      string
 	OutputTruncated bool
@@ -66,18 +67,18 @@ type validationProcessResult struct {
 
 func runValidationProcess(command []string, directory string, environment []string, timeout time.Duration, started func(Record) error) validationProcessResult {
 	stdout, stderr := newTailWriter(validationTailBytes), newTailWriter(validationTailBytes)
-	result := func(waitErr error, timedOut bool) validationProcessResult {
+	result := func(waitErr error, timedOut, stopped bool) validationProcessResult {
 		stdoutTail, stdoutTruncated := stdout.snapshot()
 		stderrTail, stderrTruncated := stderr.snapshot()
 		return validationProcessResult{
-			WaitErr: waitErr, TimedOut: timedOut,
+			WaitErr: waitErr, TimedOut: timedOut, Stopped: stopped,
 			StdoutTail: stdoutTail, StderrTail: stderrTail,
 			OutputTruncated: stdoutTruncated || stderrTruncated,
 		}
 	}
 	executable, err := executablePath()
 	if err != nil {
-		return result(err, false)
+		return result(err, false, false)
 	}
 	arguments := append([]string{internalValidate, "--"}, command...)
 	cmd := exec.Command(executable, arguments...)
@@ -95,33 +96,55 @@ func runValidationProcess(command []string, directory string, environment []stri
 	cmd.Stderr = io.MultiWriter(stderr, os.Stderr)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: unix.SIGTERM}
 	if err := cmd.Start(); err != nil {
-		return result(err, false)
+		return result(err, false, false)
 	}
 	if started != nil {
 		if err := started(processRecord(cmd.Process.Pid, "validation", cmd.Process.Pid)); err != nil {
 			_ = unix.Kill(-cmd.Process.Pid, unix.SIGKILL)
 			_ = cmd.Wait()
-			return result(err, false)
+			return result(err, false, false)
 		}
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	select {
-	case waitErr := <-done:
-		return result(waitErr, false)
-	case <-timer.C:
-		_ = unix.Kill(cmd.Process.Pid, unix.SIGTERM)
+	stoppedSamples := 0
+	stopped, timedOut := false, false
+	monitor := time.NewTicker(100 * time.Millisecond)
+	defer monitor.Stop()
+monitorLoop:
+	for {
+		select {
+		case waitErr := <-done:
+			return result(waitErr, false, false)
+		case <-timer.C:
+			timedOut = true
+			_ = unix.Kill(cmd.Process.Pid, unix.SIGTERM)
+			break monitorLoop
+		case <-monitor.C:
+			_, state := processIdentity(cmd.Process.Pid)
+			if state == 'T' || state == 't' {
+				stoppedSamples++
+			} else {
+				stoppedSamples = 0
+			}
+			if stoppedSamples >= 5 {
+				stopped = true
+				_ = unix.Kill(-cmd.Process.Pid, unix.SIGCONT)
+				_ = unix.Kill(cmd.Process.Pid, unix.SIGTERM)
+				break monitorLoop
+			}
+		}
 	}
 	grace := time.NewTimer(5 * time.Second)
 	defer grace.Stop()
 	select {
 	case waitErr := <-done:
-		return result(waitErr, true)
+		return result(waitErr, timedOut, stopped)
 	case <-grace.C:
 		_ = unix.Kill(-cmd.Process.Pid, unix.SIGKILL)
-		return result(<-done, true)
+		return result(<-done, timedOut, stopped)
 	}
 }
 
@@ -133,7 +156,10 @@ func recordValidationOutput(attempt Record, result validationProcessResult) {
 	attempt["finished_at"] = now()
 	attempt["exit_code"] = exitCode(result.WaitErr)
 	attempt["timed_out"] = result.TimedOut
-	if result.WaitErr == nil {
+	attempt["stopped"] = result.Stopped
+	if result.Stopped {
+		attempt["outcome"] = "stopped"
+	} else if result.WaitErr == nil {
 		attempt["outcome"] = "passed"
 	} else if result.TimedOut {
 		attempt["outcome"] = "timed_out"
@@ -295,6 +321,9 @@ func validateCandidate(store *Store, task Record, candidate, targetSHA, expected
 		}
 		if unchanged, reason := candidateUnchanged(candidate, expectedHead); !unchanged {
 			return validationFailed(store, task, Record{"command": stringsToAny(command), "exit_code": exitCode(waitErr), "reason": reason})
+		}
+		if result.Stopped {
+			return validationFailed(store, task, Record{"command": stringsToAny(command), "exit_code": exitCode(waitErr), "reason": "validation process stopped by job control"})
 		}
 		if timedOut {
 			return validationFailed(store, task, Record{"command": stringsToAny(command), "exit_code": 124, "reason": fmt.Sprintf("validation exceeded %g seconds", timeoutSeconds)})

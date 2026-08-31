@@ -114,6 +114,11 @@ func main() {
 			os.Exit(18)
 		}
 		_, _ = os.Stdout.WriteString("validation stdin is noninteractive\n")
+	case "stop-group":
+		_ = syscall.Kill(-syscall.Getpgrp(), syscall.SIGSTOP)
+		for {
+			time.Sleep(time.Hour)
+		}
 	case "interrupt-hook":
 		if len(os.Args) < 4 {
 			os.Exit(2)
