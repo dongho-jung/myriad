@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func superviseAgent(command []string, descriptors []int, sessionPath, sessionID string) (int, error) {
+func superviseAgent(command []string, descriptors []int, sessionPath, sessionID string, foregroundPGID int) (int, error) {
 	defer closeDescriptors(descriptors)
 	metadata := Record{}
 	store, err := NewStore()
@@ -70,6 +70,7 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 	agent.Stdin = os.Stdin
 	agent.Stdout = os.Stdout
 	agent.Stderr = os.Stderr
+	agent.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: foregroundPGID, Pdeathsig: syscall.SIGKILL}
 	if err := agent.Start(); err != nil {
 		if control != nil {
 			stopCodexServer(control, true)

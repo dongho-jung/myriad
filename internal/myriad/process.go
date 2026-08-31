@@ -33,6 +33,12 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = environment
+	foregroundPGID, err := unix.Getpgid(0)
+	if err != nil || foregroundPGID <= 1 {
+		return supervisedResult{}, fail("cannot identify foreground process group")
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Env = overlayEnvironment(cmd.Env, map[string]string{envForegroundPGID: strconv.Itoa(foregroundPGID)})
 	files := reservation.Files()
 	if len(files) > 0 {
 		cmd.ExtraFiles = files
@@ -64,9 +70,9 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 			return supervisedResult{}, err
 		}
 	}
-	// The foreground terminal sends signals to both launcher and supervisor.
-	// Capturing them here prevents the launcher from abandoning task bookkeeping;
-	// the supervisor remains the only process that decides how the agent exits.
+	// The launcher remains in the agent's foreground group while the lock
+	// supervisor runs in its own group. Capture terminal signals here so the
+	// launcher can finish bookkeeping after the agent exits.
 	signals := make(chan os.Signal, 8)
 	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
@@ -77,8 +83,8 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 		case waitErr := <-done:
 			return supervisedResult{ExitCode: exitCode(waitErr), SupervisorPID: cmd.Process.Pid}, nil
 		case <-signals:
-			// The same terminal signal is already delivered to the supervisor's
-			// process group. Do not send a duplicate.
+			// The foreground agent already received the terminal signal. Keep the
+			// launcher alive long enough to record and finalize its result.
 		}
 	}
 }
@@ -94,6 +100,15 @@ func supervisor(raw []string) (int, error) {
 	if len(command) == 0 {
 		return 2, fail("supervisor has no agent command")
 	}
+	sessionPath := os.Getenv(envLockSessionPath)
+	sessionID := os.Getenv(envLockSessionID)
+	foregroundPGID, err := strconv.Atoi(os.Getenv(envForegroundPGID))
+	if err != nil || foregroundPGID <= 1 {
+		return 2, fail("supervisor received an invalid foreground process group")
+	}
+	if (sessionPath == "") != (sessionID == "") {
+		return 2, fail("supervisor received incomplete session metadata")
+	}
 	descriptors, err := inheritedDescriptors()
 	if err != nil {
 		return 2, err
@@ -102,17 +117,14 @@ func supervisor(raw []string) (int, error) {
 		return 2, fail("supervisor received no checkout lease")
 	}
 	if err := unix.Prctl(unix.PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0); err != nil {
+		closeDescriptors(descriptors)
 		return 2, fail("cannot enable descendant supervision: %v", err)
 	}
-	sessionPath := os.Getenv(envLockSessionPath)
-	sessionID := os.Getenv(envLockSessionID)
 	_ = os.Unsetenv(envInheritedLockFDs)
 	_ = os.Unsetenv(envLockSessionPath)
 	_ = os.Unsetenv(envLockSessionID)
-	if (sessionPath == "") != (sessionID == "") {
-		return 2, fail("supervisor received incomplete session metadata")
-	}
-	return superviseAgent(command, descriptors, sessionPath, sessionID)
+	_ = os.Unsetenv(envForegroundPGID)
+	return superviseAgent(command, descriptors, sessionPath, sessionID, foregroundPGID)
 }
 
 func inheritedDescriptors() ([]int, error) {

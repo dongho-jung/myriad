@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -103,6 +104,151 @@ func TestSupervisorStopsDetachedDescendantBeforeReturning(t *testing.T) {
 	if len(tasks) != 1 || stringValue(tasks[0], "status") != StatusCompleted {
 		t.Fatalf("unexpected task result: %s", describe(tasks))
 	}
+}
+
+func TestSupervisorKeepsAgentInForegroundProcessGroup(t *testing.T) {
+	myriad, helper := testMyriadBinaries(t)
+	repository := testRepository(t)
+	store := testStore(t)
+	root := t.TempDir()
+	ready := filepath.Join(root, "ready")
+	release := filepath.Join(root, "release")
+	command := exec.Command(myriad, "start", "--agent", "custom", "--task", "signal-routing", "--quiet", "--", helper, "wait", ready, release)
+	command.Dir = repository
+	command.Env = os.Environ()
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	defer func() {
+		if !waited {
+			_ = unix.Kill(-command.Process.Pid, unix.SIGKILL)
+			_ = command.Wait()
+		}
+	}()
+	waitForFile(t, ready)
+	raw, err := os.ReadFile(ready)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentPID, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var supervisorPID int
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		tasks := store.All(false)
+		if len(tasks) == 1 && stringValue(tasks[0], "status") == StatusRunning {
+			supervisorPID, _ = intValue(recordMap(tasks[0], "process")["pid"])
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if supervisorPID == 0 {
+		t.Fatal("supervisor process identity did not appear")
+	}
+	supervisorPGID, err := unix.Getpgid(supervisorPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if supervisorPGID != supervisorPID {
+		t.Fatalf("supervisor process group = %d, want isolated group %d", supervisorPGID, supervisorPID)
+	}
+	agentPGID, err := unix.Getpgid(agentPID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agentPGID != command.Process.Pid {
+		t.Fatalf("agent process group = %d, want launcher foreground group %d", agentPGID, command.Process.Pid)
+	}
+
+	if err := unix.Kill(-command.Process.Pid, unix.SIGINT); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case <-done:
+		waited = true
+	case <-time.After(10 * time.Second):
+		t.Fatal("foreground signal did not stop the supervised agent")
+	}
+}
+
+func TestSupervisorDeathStopsAgentBeforeLeaseRelease(t *testing.T) {
+	myriad, helper := testMyriadBinaries(t)
+	repository := testRepository(t)
+	store := testStore(t)
+	root := t.TempDir()
+	ready := filepath.Join(root, "ready")
+	release := filepath.Join(root, "release")
+	command := exec.Command(myriad, "start", "--agent", "custom", "--task", "supervisor-death", "--quiet", "--", helper, "wait", ready, release)
+	command.Dir = repository
+	command.Env = os.Environ()
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := false
+	defer func() {
+		_ = os.WriteFile(release, []byte("release\n"), 0o600)
+		if !waited {
+			_ = unix.Kill(-command.Process.Pid, unix.SIGKILL)
+			_ = command.Wait()
+		}
+	}()
+	waitForFile(t, ready)
+	raw, err := os.ReadFile(ready)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentPID, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var task Record
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		tasks := store.All(false)
+		if len(tasks) == 1 && stringValue(tasks[0], "status") == StatusRunning {
+			task = tasks[0]
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if task == nil {
+		t.Fatal("supervisor process identity did not appear")
+	}
+	supervisorPID, _ := intValue(recordMap(task, "process")["pid"])
+	if supervisorPID <= 1 {
+		t.Fatal("task has no valid supervisor pid")
+	}
+	if err := unix.Kill(supervisorPID, unix.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	waitForProcessExit(t, agentPID)
+
+	done := make(chan error, 1)
+	go func() { done <- command.Wait() }()
+	select {
+	case <-done:
+		waited = true
+	case <-time.After(10 * time.Second):
+		t.Fatal("launcher did not finish after supervisor death")
+	}
+	identity, err := taskCheckoutIdentity(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.CheckoutLock(stringValue(task, "worktree_path"), identity, false)
+	if err != nil {
+		t.Fatalf("checkout lease remained after agent termination: %v", err)
+	}
+	_ = lock.Unlock()
 }
 
 func TestSupervisorKeepsCheckoutLockedAfterLauncherDies(t *testing.T) {

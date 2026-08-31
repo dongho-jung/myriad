@@ -181,6 +181,7 @@ func nativeAgentEnvironment() []string {
 	return environmentWithout(os.Environ(),
 		"MYRIAD_POLICY", envInheritedLockFDs, envLockSessionPath,
 		envLockSessionID, envAgentSessionPath, envAgentSessionID,
+		envForegroundPGID,
 		"MYRIAD_HARNESS", "MYRIAD_TASK_ID", "MYRIAD_TASK_TITLE",
 		"MYRIAD_WORKTREE", "MYRIAD_WORKDIR", "MYRIAD_TARGET_BRANCH",
 		"MYRIAD_BRANCH", "MYRIAD_REPO_MEMORY", "MYRIAD_MEMORY_SOURCE",

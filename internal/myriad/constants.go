@@ -37,6 +37,7 @@ const (
 	envInheritedLockFDs = "MYRIAD_INHERITED_LOCK_FDS"
 	envLockSessionPath  = "MYRIAD_LOCK_SESSION_PATH"
 	envLockSessionID    = "MYRIAD_LOCK_SESSION_ID"
+	envForegroundPGID   = "MYRIAD_FOREGROUND_PGID"
 	envAgentSessionPath = "MYRIAD_SESSION_PATH"
 	envAgentSessionID   = "MYRIAD_SESSION_ID"
 	envCodexRecoveryCWD = "MYRIAD_CODEX_RECOVERY_CWD"
