@@ -566,8 +566,8 @@ func recordIntegrationSuccess(task Record, reason, strategy, commit string) {
 }
 
 func queuedReason(store *Store, repository string, task Record, reason string) string {
-	if count := notifyActiveSessions(store, repository, task); count > 0 {
-		return fmt.Sprintf("%s; handoff requested from %d active session(s)", reason, count)
+	if count := recordActiveSessionBlockers(store, repository, task); count > 0 {
+		return fmt.Sprintf("%s; waiting for %d active session(s) to exit", reason, count)
 	}
 	return reason
 }

@@ -183,12 +183,23 @@ func TestQueuedIntegrationRecordsSessionBlocker(t *testing.T) {
 		t.Fatal(err)
 	}
 	diagnostic := recordMap(queued, "last_integration_diagnostic")
-	if stringValue(diagnostic, "outcome") != "queued" || !strings.Contains(stringValue(diagnostic, "reason"), "active agent") {
+	reason := stringValue(diagnostic, "reason")
+	if stringValue(diagnostic, "outcome") != "queued" || !strings.Contains(reason, "active agent") || !strings.Contains(reason, "waiting for 1 active session(s) to exit") {
 		t.Fatalf("unexpected integration diagnostic: %s", describe(diagnostic))
+	}
+	if strings.Contains(reason, "handoff") {
+		t.Fatalf("queued integration requested a disruptive handoff: %q", reason)
 	}
 	blockers := recordSlice(diagnostic, "blockers")
 	if len(blockers) != 1 || stringValue(anyRecord(blockers[0]), "session_id") != reservation.SessionID {
 		t.Fatalf("session blocker was not retained: %s", describe(blockers))
+	}
+	inbox, err := readSessionInbox(store, reservation.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if messages := recordSlice(inbox, "messages"); len(messages) != 0 {
+		t.Fatalf("queued integration interrupted the active session: %s", describe(messages))
 	}
 	if detail := integrationRetryFailure(store, stringValue(task, "task_id"), 2, nil); strings.Contains(detail, "<nil>") || !strings.Contains(detail, "active agent") {
 		t.Fatalf("retry detail lost the queue reason: %q", detail)

@@ -2,15 +2,12 @@ package myriad
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 type sessionOptions struct {
@@ -402,8 +399,7 @@ func activeNotificationSessions(store *Store, repository string) []Record {
 	return result
 }
 
-func notifyActiveSessions(store *Store, repository string, task Record) int {
-	notified := 0
+func recordActiveSessionBlockers(store *Store, repository string, task Record) int {
 	sessions := activeNotificationSessions(store, repository)
 	if len(sessions) > 0 {
 		blockers := make([]any, 0, len(sessions))
@@ -415,17 +411,5 @@ func notifyActiveSessions(store *Store, repository string, task Record) int {
 		}
 		task["integration_blockers"] = blockers
 	}
-	for _, session := range sessions {
-		if _, err := enqueueIntegrationNotice(store, session, task); err != nil {
-			fmt.Fprintf(os.Stderr, "myriad: could not notify active session %s: %v\n", stringValue(session, "session_id"), err)
-			continue
-		}
-		process := recordMap(session, "process")
-		pid, _ := intValue(process["pid"])
-		if stringValue(session, "notification_state") == "ready" && boolValue(session, "notification_ready", false) {
-			_ = unix.Kill(pid, unix.SIGUSR1)
-		}
-		notified++
-	}
-	return notified
+	return len(sessions)
 }

@@ -76,6 +76,10 @@ myriad reconcile [--quiet]          repair interrupted lifecycle state
 myriad statusline [--claude]        render active task status
 ```
 
+An integration blocked by an active repository session remains queued and is
+retried automatically after that session exits. Myriad does not interrupt the
+foreground agent or request a handoff merely to advance the target sooner.
+
 Task records retain bounded lifecycle, integration, publish, and validation
 histories. Validation entries include the command, process identity, outcome,
 timeout state, and bounded stdout/stderr tails. `myriad diagnose TASK_ID`
