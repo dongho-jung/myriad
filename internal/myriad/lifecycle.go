@@ -834,6 +834,13 @@ func recordOrphans(store *Store) {
 				continue
 			}
 			taskID := "orphan-" + sha256Hex([]byte(resolved))[:12]
+			registry, pathErr := store.TaskPath(taskID)
+			if pathErr != nil {
+				continue
+			}
+			if _, stateErr := os.Lstat(registry); !os.IsNotExist(stateErr) {
+				continue
+			}
 			task := Record{
 				"schema_version": TaskRecordSchema, "task_id": taskID,
 				"repository": repository, "git_common_dir": common,

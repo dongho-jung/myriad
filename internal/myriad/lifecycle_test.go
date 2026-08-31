@@ -527,6 +527,41 @@ func TestRecordedOrphanRemainsManageable(t *testing.T) {
 	}
 }
 
+func TestRecordOrphansPreservesExistingRegistry(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	path, err := canonical(stringValue(task, "worktree_path"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := store.TaskPath(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(registry); err != nil {
+		t.Fatal(err)
+	}
+	orphanID := "orphan-" + sha256Hex([]byte(path))[:12]
+	orphanRegistry, err := store.TaskPath(orphanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preserved := []byte("preserve corrupt registry\n")
+	if err := os.WriteFile(orphanRegistry, preserved, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	recordOrphans(store)
+	current, err := os.ReadFile(orphanRegistry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(current) != string(preserved) {
+		t.Fatalf("orphan discovery overwrote existing registry: %q", current)
+	}
+}
+
 func TestWorktreePruneHonorsRepositoryActivity(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)
