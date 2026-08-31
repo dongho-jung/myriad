@@ -38,6 +38,57 @@ func TestRefreshCompletesEmptyPreProvisionRecovery(t *testing.T) {
 	}
 }
 
+func TestRecoveryPreparationHonorsCheckoutLease(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	worktree := stringValue(task, "worktree_path")
+	testCommitFile(t, worktree, "task.txt", "task\n", "fix: preserve task work")
+	testCommitFile(t, repository, "target.txt", "target\n", "feat: advance target")
+	task["status"] = StatusRecovery
+	delete(task, "process")
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	identity, err := taskCheckoutIdentity(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := store.CheckoutLock(worktree, identity, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := prepareRecoveryCheckout(store, task); err == nil || !isLockBusy(err) {
+		_ = lease.Unlock()
+		t.Fatalf("recovery preparation ignored checkout lease: %v", err)
+	}
+	mergeHead, err := gitCommand(worktree, false, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	if err != nil {
+		_ = lease.Unlock()
+		t.Fatal(err)
+	}
+	if mergeHead.ExitCode == 0 {
+		_ = lease.Unlock()
+		t.Fatal("recovery mutated the worktree while its lease was held")
+	}
+	if err := lease.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+
+	note, err := prepareRecoveryCheckout(store, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, "staged the current target merge") {
+		t.Fatalf("unexpected recovery note: %s", note)
+	}
+	mergeHead, err = gitCommand(worktree, false, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	if err != nil || mergeHead.ExitCode != 0 {
+		t.Fatalf("recovery did not stage the target merge: (%v, %d)", err, mergeHead.ExitCode)
+	}
+}
+
 func TestTaskKeepsDotDotPrefixedWorkingDirectory(t *testing.T) {
 	repository := testRepository(t)
 	testCommitFile(t, repository, "..config/tracked.txt", "nested\n", "test: add nested directory")

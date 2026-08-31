@@ -231,7 +231,7 @@ func recoveryTaskTitle(task Record) string {
 	return "untitled recovery"
 }
 
-func prepareRecovery(task Record) string {
+func prepareRecovery(task Record) (string, error) {
 	notes := []string{}
 	quarantines := recordSlice(task, "worktree_quarantines")
 	if len(quarantines) > 0 {
@@ -245,49 +245,113 @@ func prepareRecovery(task Record) string {
 	}
 	if !taskWorktreeReady(task) {
 		notes = append(notes, "The managed worktree was not created before the previous session ended. Send the next prompt to provision it from the recorded base.")
-		return strings.Join(notes, " ")
+		return strings.Join(notes, " "), nil
 	}
 	path := stringValue(task, "worktree_path")
 	repository := stringValue(task, "repository")
-	head, _ := gitRef(path, "HEAD")
+	head, err := gitRef(path, "HEAD")
+	if err != nil {
+		return "", err
+	}
 	target := stringValue(task, "target_branch")
 	excluded := stringValue(task, "base_sha")
-	if target != "" && branchExists(repository, target) {
-		excluded, _ = gitRef(repository, "refs/heads/"+target)
+	targetSHA := ""
+	if target != "" {
+		var exists bool
+		targetSHA, exists, err = branchRef(repository, target)
+		if err != nil {
+			return "", err
+		}
+		if exists {
+			excluded = targetSHA
+		}
 	}
-	if findings, _ := forbiddenHistory(repository, head, excluded); len(findings) > 0 {
+	findings, err := forbiddenHistory(repository, head, excluded)
+	if err != nil {
+		return "", err
+	}
+	if len(findings) > 0 {
 		notes = append(notes, "Rewrite unpublished commits so these machine-local paths never appear in history: "+strings.Join(findingPaths(findings), ", ")+".")
 	}
 	if stringValue(task, "interrupted_at") != "" {
 		notes = append(notes, "Resume the interrupted session and continue from its preserved files and commits.")
-		return strings.Join(notes, " ")
+		return strings.Join(notes, " "), nil
 	}
-	changes, _ := worktreeChanges(path)
+	changes, err := worktreeChanges(path)
+	if err != nil {
+		return "", err
+	}
 	if len(changes.Normal) > 0 || target == "" {
 		notes = append(notes, "Resume the preserved files and commit the completed result.")
-		return strings.Join(notes, " ")
+		return strings.Join(notes, " "), nil
 	}
-	if !branchExists(repository, target) {
+	if targetSHA == "" {
 		notes = append(notes, "The target branch "+target+" no longer exists; repair the task metadata first.")
-		return strings.Join(notes, " ")
+		return strings.Join(notes, " "), nil
 	}
-	mergeHead, _ := gitCommand(path, false, "rev-parse", "--verify", "MERGE_HEAD")
+	mergeHead, err := gitCommand(path, false, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	if err != nil {
+		return "", err
+	}
 	if mergeHead.ExitCode == 0 {
 		notes = append(notes, "A target merge is already in progress. Resolve only those conflicts and commit.")
-		return strings.Join(notes, " ")
+		return strings.Join(notes, " "), nil
 	}
-	targetSHA, _ := gitRef(repository, "refs/heads/"+target)
-	if isAncestor(repository, targetSHA, head) {
+	if mergeHead.ExitCode != 1 {
+		return "", fail("cannot inspect recovery merge state")
+	}
+	containsTarget, err := isAncestorChecked(repository, targetSHA, head)
+	if err != nil {
+		return "", err
+	}
+	if containsTarget {
 		notes = append(notes, "The task already contains the current target; finish and commit the result.")
-		return strings.Join(notes, " ")
+		return strings.Join(notes, " "), nil
 	}
-	merged, _ := gitCommand(path, false, "-c", "core.hooksPath=/dev/null", "merge", "--no-ff", "--no-commit", targetSHA)
+	merged, err := gitCommand(path, false, "-c", "core.hooksPath=/dev/null", "merge", "--no-ff", "--no-commit", targetSHA)
+	if err != nil {
+		return "", err
+	}
 	if merged.ExitCode != 0 {
+		conflicts, conflictErr := gitCommand(path, true, "diff", "--name-only", "--diff-filter=U")
+		if conflictErr != nil {
+			return "", conflictErr
+		}
+		if strings.TrimSpace(conflicts.Stdout) == "" {
+			detail := strings.TrimSpace(merged.Stderr + merged.Stdout)
+			return "", fail("cannot prepare recovery merge: %s", firstNonempty(detail, fmt.Sprintf("git merge exited with %d", merged.ExitCode)))
+		}
 		notes = append(notes, "Myriad prepared merge conflicts with the current target. Resolve only those conflicts and commit.")
 	} else {
 		notes = append(notes, "Myriad staged the current target merge. Validate, make any needed fix, and commit it.")
 	}
-	return strings.Join(notes, " ")
+	return strings.Join(notes, " "), nil
+}
+
+func prepareRecoveryCheckout(store *Store, task Record) (string, error) {
+	repository := stringValue(task, "repository")
+	activity, err := store.RepositoryActivityLock(repository, false, true)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = activity.Unlock() }()
+	path, err := managedWorktreePath(store, task)
+	if err != nil {
+		return "", err
+	}
+	identity, err := taskCheckoutIdentity(task)
+	if err != nil {
+		return "", err
+	}
+	checkout, err := store.CheckoutLock(path, identity, false)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = checkout.Unlock() }()
+	if err := recreateWorktree(store, task); err != nil {
+		return "", err
+	}
+	return prepareRecovery(task)
 }
 
 func defaultRecoveryCommand(agent, prompt string) ([]string, error) {
@@ -316,10 +380,10 @@ func recoverTask(store *Store, taskID, agent string, integrationPolicy *bool, ne
 	if stringValue(task, "integrated_commit") != "" {
 		return 2, fail("result is already integrated; use cleanup for retained artifacts")
 	}
-	if err := recreateWorktree(store, task); err != nil {
+	context, err := prepareRecoveryCheckout(store, task)
+	if err != nil {
 		return 2, err
 	}
-	context := prepareRecovery(task)
 	if agent == "" {
 		agent = firstNonempty(stringValue(task, "agent"), "codex")
 	}

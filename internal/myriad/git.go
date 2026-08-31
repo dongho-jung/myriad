@@ -42,13 +42,42 @@ func gitRef(cwd, name string) (string, error) {
 }
 
 func branchExists(repository, branch string) bool {
-	result, err := gitCommand(repository, false, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
-	return err == nil && result.ExitCode == 0
+	_, exists, err := branchRef(repository, branch)
+	return err == nil && exists
 }
 
 func isAncestor(repository, older, newer string) bool {
+	ancestor, err := isAncestorChecked(repository, older, newer)
+	return err == nil && ancestor
+}
+
+func branchRef(repository, branch string) (string, bool, error) {
+	expected := "refs/heads/" + branch
+	result, err := gitCommand(repository, true, "for-each-ref", "--format=%(refname)%00%(objectname)", expected)
+	if err != nil {
+		return "", false, err
+	}
+	for _, line := range strings.Split(result.Stdout, "\n") {
+		ref, object, found := strings.Cut(line, "\x00")
+		if found && ref == expected && object != "" {
+			return object, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func isAncestorChecked(repository, older, newer string) (bool, error) {
 	result, err := gitCommand(repository, false, "merge-base", "--is-ancestor", older, newer)
-	return err == nil && result.ExitCode == 0
+	if err != nil {
+		return false, err
+	}
+	if result.ExitCode == 0 {
+		return true, nil
+	}
+	if result.ExitCode == 1 {
+		return false, nil
+	}
+	return false, fail("cannot compare commit ancestry %s..%s", older, newer)
 }
 
 func repoKey(repository string) (string, error) {
