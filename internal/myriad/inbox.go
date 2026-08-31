@@ -218,6 +218,42 @@ func updateInboxEvent(store *Store, sessionID, eventID, status, detail string) (
 	return selected, writeSessionInbox(store, inbox)
 }
 
+func rollbackAcceptedInboxEvent(store *Store, sessionID, eventID, previous, detail string) error {
+	if previous != "pending" && previous != "delivered" {
+		return fail("inbox event %s has invalid rollback state %s", eventID, previous)
+	}
+	lock, err := store.Lock("inbox:"+sessionID, true)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lock.Unlock() }()
+	inbox, err := readSessionInbox(store, sessionID)
+	if err != nil {
+		return err
+	}
+	for _, raw := range recordSlice(inbox, "messages") {
+		message, ok := toAnyMap(raw)
+		if !ok || message["id"] != eventID {
+			continue
+		}
+		if message["status"] == "resolved" {
+			return nil
+		}
+		if message["status"] != "accepted" {
+			return fail("inbox event %s is no longer accepted", eventID)
+		}
+		message["status"] = previous
+		delete(message, "accepted_at")
+		delete(message, "accepted_via")
+		message["handoff_signal_failed_at"] = now()
+		if detail != "" {
+			message["handoff_signal_error"] = detail
+		}
+		return writeSessionInbox(store, inbox)
+	}
+	return fail("unknown inbox event: %s", eventID)
+}
+
 func resolveTaskNotices(store *Store, taskID string) {
 	entries, _ := os.ReadDir(store.Inboxes)
 	for _, entry := range entries {

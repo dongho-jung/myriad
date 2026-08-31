@@ -237,6 +237,61 @@ func TestTaskContextRejectsOversizedPayload(t *testing.T) {
 	}
 }
 
+func TestHandoffSignalFailureRestoresPendingEvent(t *testing.T) {
+	store := testStore(t)
+	repository := testRepository(t)
+	reservation, err := acquireCheckoutSession(store, repository, true, sessionOptions{Repository: repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reservation.Release(store, repository, "")
+	owner := processRecord(os.Getpid(), "lock-supervisor", 0)
+	if err := updateSessionMetadata(reservation.SessionPath, reservation.SessionID, Record{
+		"process": owner, "notification_state": "ready",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envAgentSessionID, reservation.SessionID)
+	t.Setenv(envAgentSessionPath, reservation.SessionPath)
+
+	task := Record{
+		"task_id": "handoff-signal-failure", "status": StatusRecovery,
+		"repository": repository, "target_branch": "main",
+	}
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	eventID, err := enqueueIntegrationNotice(store, Record{"session_id": reservation.SessionID}, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalSignal := signalHandoffSupervisor
+	signalHandoffSupervisor = func(int, unix.Signal) error { return unix.ESRCH }
+	defer func() { signalHandoffSupervisor = originalSignal }()
+
+	if err := handoffCommand(store, eventID); err == nil {
+		t.Fatal("handoff accepted a failed supervisor signal")
+	}
+	inbox, err := readSessionInbox(store, reservation.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range recordSlice(inbox, "messages") {
+		message := anyRecord(raw)
+		if stringValue(message, "id") != eventID {
+			continue
+		}
+		if status := stringValue(message, "status"); status != "pending" {
+			t.Fatalf("event status = %s, want pending", status)
+		}
+		if message["accepted_at"] != nil || message["accepted_via"] != nil {
+			t.Fatal("rolled-back event retained acceptance metadata")
+		}
+		return
+	}
+	t.Fatal("handoff event disappeared after signal failure")
+}
+
 func TestFallbackTaskSlugUsesCompleteWords(t *testing.T) {
 	if got, want := fallbackTaskSlug("Implement the extraordinarilylongwordthatislongerthanfortyeightcharacters authentication refresh flow"), "implement-authentication-refresh"; got != want {
 		t.Fatalf("fallback slug = %q, want %q", got, want)

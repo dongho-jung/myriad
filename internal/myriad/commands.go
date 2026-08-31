@@ -580,6 +580,8 @@ func resolveObsoleteHandoff(store *Store, taskID string) bool {
 	return recognizeResultOnTarget(store, task)
 }
 
+var signalHandoffSupervisor = unix.Kill
+
 func handoffCommand(store *Store, eventID string) error {
 	sessionID, _, session, err := currentAgentSession(store, "")
 	if err != nil {
@@ -618,7 +620,11 @@ func handoffCommand(store *Store, eventID string) error {
 		return err
 	}
 	pid, _ := intValue(owner["pid"])
-	if err := unix.Kill(pid, unix.SIGUSR2); err != nil {
+	if err := signalHandoffSupervisor(pid, unix.SIGUSR2); err != nil {
+		rollbackErr := rollbackAcceptedInboxEvent(store, sessionID, eventID, stringValue(message, "status"), err.Error())
+		if rollbackErr != nil {
+			return fail("cannot notify the session supervisor: %v; cannot restore inbox event: %v", err, rollbackErr)
+		}
 		return fail("cannot notify the session supervisor: %v", err)
 	}
 	fmt.Printf("handoff accepted: %s\nMyriad will close this foreground session and retry integration after its lease is released.\n", eventID)
