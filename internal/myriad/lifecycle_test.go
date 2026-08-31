@@ -671,6 +671,102 @@ func TestTaskRebasesOntoAdvancedTarget(t *testing.T) {
 	}
 }
 
+func TestTaskRebasesOntoRewrittenTarget(t *testing.T) {
+	repository := testRepository(t)
+	testCommitFile(t, repository, "old-base.txt", "old base\n", "feat: add old base")
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	result := testCommitFile(t, stringValue(task, "worktree_path"), "task.txt", "task\n", "feat: add task result")
+	testCommand(t, repository, "git", "reset", "--hard", "-q", "HEAD^")
+	target := testCommitFile(t, repository, "target.txt", "target\n", "feat: replace target history")
+
+	current := finishTestTask(t, store, task, true)
+	if status := stringValue(current, "status"); status != StatusIntegrated {
+		t.Fatalf("status = %s, reason = %s", status, stringValue(current, "status_reason"))
+	}
+	if strategy := stringValue(current, "integration_strategy"); strategy != "rebase-diverged" {
+		t.Fatalf("strategy = %s, want rebase-diverged", strategy)
+	}
+	integrated := stringValue(current, "integrated_commit")
+	if integrated == result {
+		t.Fatal("diverged task result was not replayed")
+	}
+	parents := strings.Fields(testCommand(t, repository, "git", "rev-list", "--parents", "-n", "1", integrated))
+	if len(parents) != 2 || parents[1] != target {
+		t.Fatalf("replayed commit parents = %v, want only %s", parents, target)
+	}
+	for _, name := range []string{"task.txt", "target.txt"} {
+		if _, err := os.Stat(filepath.Join(repository, name)); err != nil {
+			t.Fatalf("replayed target is missing %s: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repository, "old-base.txt")); !os.IsNotExist(err) {
+		t.Fatalf("replay restored unrelated abandoned base content: %v", err)
+	}
+}
+
+func TestRewrittenTargetConflictPreservesResult(t *testing.T) {
+	repository := testRepository(t)
+	testCommitFile(t, repository, "old-base.txt", "old base\n", "feat: add old base")
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	result := testCommitFile(t, stringValue(task, "worktree_path"), "tracked.txt", "task\n", "fix: update task copy")
+	testCommand(t, repository, "git", "reset", "--hard", "-q", "HEAD^")
+	target := testCommitFile(t, repository, "tracked.txt", "target\n", "fix: update rewritten target")
+
+	current := finishTestTask(t, store, task, true)
+	if status := stringValue(current, "status"); status != StatusRecovery {
+		t.Fatalf("status = %s, want %s", status, StatusRecovery)
+	}
+	if reason := stringValue(current, "status_reason"); !strings.Contains(reason, "integration conflict") {
+		t.Fatalf("unexpected reason: %s", reason)
+	}
+	if head, _ := gitRef(repository, "refs/heads/main"); head != target {
+		t.Fatalf("conflicting replay changed target to %s", head)
+	}
+	if stringValue(current, "result_commit") != result {
+		t.Fatal("conflicting replay did not preserve the task result")
+	}
+}
+
+func TestPublishRebasesActiveTaskOntoRewrittenTarget(t *testing.T) {
+	repository := testRepository(t)
+	testCommitFile(t, repository, "old-base.txt", "old base\n", "feat: add old base")
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	path := stringValue(task, "worktree_path")
+	testCommitFile(t, path, "task.txt", "task\n", "feat: add task result")
+	testCommand(t, repository, "git", "reset", "--hard", "-q", "HEAD^")
+	target := testCommitFile(t, repository, "target.txt", "target\n", "feat: replace target history")
+	task["status"] = StatusRunning
+	task["process"] = processRecord(os.Getpid(), "agent", 0)
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	published, err := publishTaskCheckpoint(store, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strategy := stringValue(published, "strategy"); strategy != "rebase-diverged" {
+		t.Fatalf("strategy = %s, want rebase-diverged", strategy)
+	}
+	publishedCommit := stringValue(published, "published_commit")
+	if head, _ := gitRef(repository, "refs/heads/main"); head != publishedCommit {
+		t.Fatalf("main = %s, want %s", head, publishedCommit)
+	}
+	if head, _ := gitRef(path, "HEAD"); head != publishedCommit {
+		t.Fatalf("active task = %s, want %s", head, publishedCommit)
+	}
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(current, "base_sha") != target || stringValue(current, "result_commit") != publishedCommit {
+		t.Fatalf("published task checkpoint was not rebased durably: %s", describe(current))
+	}
+}
+
 func TestTaskRebaseConflictPreservesTarget(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)
@@ -777,6 +873,27 @@ func TestTaskRefusesRewoundTarget(t *testing.T) {
 	}
 	if head, _ := gitRef(repository, "refs/heads/main"); head != first {
 		t.Fatalf("rewound target changed to %s", head)
+	}
+}
+
+func TestTaskRefusesUnrelatedTargetHistory(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	testCommitFile(t, stringValue(task, "worktree_path"), "task.txt", "task\n", "feat: add task result")
+	tree := strings.TrimSpace(testCommand(t, repository, "git", "write-tree"))
+	unrelated := strings.TrimSpace(testCommand(t, repository, "git", "commit-tree", tree, "-m", "chore: replace repository history"))
+	testCommand(t, repository, "git", "reset", "--hard", "-q", unrelated)
+
+	current := finishTestTask(t, store, task, true)
+	if status := stringValue(current, "status"); status != StatusRecovery {
+		t.Fatalf("status = %s, want %s", status, StatusRecovery)
+	}
+	if reason := stringValue(current, "status_reason"); !strings.Contains(reason, "unrelated history") {
+		t.Fatalf("unexpected reason: %s", reason)
+	}
+	if head, _ := gitRef(repository, "refs/heads/main"); head != unrelated {
+		t.Fatalf("unrelated target changed to %s", head)
 	}
 }
 

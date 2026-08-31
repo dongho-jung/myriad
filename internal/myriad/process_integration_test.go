@@ -207,6 +207,78 @@ func TestManagedRecoveryIntegratesPreservedCommit(t *testing.T) {
 	}
 }
 
+func TestLaterSessionRebasesAfterConcurrentPublish(t *testing.T) {
+	myriad, helper := testMyriadBinaries(t)
+	repository := testRepository(t)
+	store := testStore(t)
+	root := t.TempDir()
+	yReady := filepath.Join(root, "y-ready")
+	yRelease := filepath.Join(root, "y-release")
+	y := exec.Command(myriad, "start", "--agent", "custom", "--task", "session-y", "--quiet", "--", helper, "commit-wait", "y-result.txt", yReady, yRelease)
+	y.Dir = repository
+	y.Env = os.Environ()
+	if err := y.Start(); err != nil {
+		t.Fatal(err)
+	}
+	yWaited := false
+	defer func() {
+		_ = os.WriteFile(yRelease, []byte("release\n"), 0o600)
+		if !yWaited {
+			_ = y.Process.Kill()
+			_ = y.Wait()
+		}
+		for _, task := range store.All(false) {
+			owner := recordMap(task, "process")
+			if processAlive(owner) {
+				pid, _ := intValue(owner["pid"])
+				_ = unix.Kill(pid, unix.SIGKILL)
+			}
+		}
+	}()
+	waitForFile(t, yReady)
+
+	x := exec.Command(myriad, "start", "--agent", "custom", "--task", "session-x", "--quiet", "--", helper, "commit-publish", "x-result.txt", myriad)
+	x.Dir = repository
+	x.Env = os.Environ()
+	if output, err := x.CombinedOutput(); err != nil {
+		t.Fatalf("session X could not publish while Y was active: %v\n%s", err, output)
+	}
+	if _, err := os.Stat(filepath.Join(repository, "x-result.txt")); err != nil {
+		t.Fatalf("session X result was not published: %v", err)
+	}
+	if processStart(readPIDFile(t, yReady)) == "" {
+		t.Fatal("publishing session X stopped active session Y")
+	}
+
+	if err := os.WriteFile(yRelease, []byte("release\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := y.Wait(); err != nil {
+		t.Fatalf("session Y did not integrate after X advanced main: %v", err)
+	}
+	yWaited = true
+	for _, name := range []string{"x-result.txt", "y-result.txt"} {
+		if _, err := os.Stat(filepath.Join(repository, name)); err != nil {
+			t.Fatalf("final main is missing %s: %v", name, err)
+		}
+	}
+	var xTask, yTask Record
+	for _, task := range store.All(true) {
+		switch stringValue(task, "description") {
+		case "session-x":
+			xTask = task
+		case "session-y":
+			yTask = task
+		}
+	}
+	if xTask == nil || stringValue(xTask, "status") != StatusIntegrated {
+		t.Fatalf("session X did not finish integrated: %s", describe(xTask))
+	}
+	if yTask == nil || stringValue(yTask, "status") != StatusIntegrated || stringValue(yTask, "integration_strategy") != "rebase" {
+		t.Fatalf("session Y was not automatically rebased: %s", describe(yTask))
+	}
+}
+
 func TestProvisioningDoesNotFallBackAfterAppServerFailure(t *testing.T) {
 	myriad, _ := testMyriadBinaries(t)
 	repository := testRepository(t)

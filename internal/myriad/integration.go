@@ -407,7 +407,11 @@ func createIntegrationCandidate(repository string, task Record, targetSHA, resul
 	if conflicted {
 		return "", "rebase", nil
 	}
-	return head, "rebase", nil
+	strategy := "rebase"
+	if stringValue(task, "integration_target_relation") == targetDivergedBase {
+		strategy = "rebase-diverged"
+	}
+	return head, strategy, nil
 }
 
 func synchronizePublishedRebase(path, base, targetSHA, resultCommit, candidateHead string) error {
@@ -520,6 +524,9 @@ func recordIntegrationDiagnostic(task Record, status, reason, strategy, integrat
 	if blockers, exists := task["integration_blockers"]; exists {
 		diagnostic["blockers"] = blockers
 		delete(task, "integration_blockers")
+	}
+	if relation := stringValue(task, "integration_target_relation"); relation != "" {
+		diagnostic["target_relation"] = relation
 	}
 	appendRecordHistory(task, "integration_diagnostics", diagnostic, integrationHistory)
 	task["last_integration_diagnostic"] = diagnostic
@@ -639,7 +646,22 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 	if !resultDescends {
 		return deferIntegration(store, task, StatusRecovery, "result does not descend from the recorded base", true)
 	}
-	findings, err := forbiddenHistory(repository, resultCommit, targetSHA)
+	relation, ancestryErr := targetHistoryRelation(repository, base, targetSHA)
+	if ancestryErr != nil {
+		return deferIntegration(store, task, StatusRecovery, ancestryErr.Error(), true)
+	}
+	task["integration_target_relation"] = relation
+	switch relation {
+	case targetRewoundBase:
+		return deferIntegration(store, task, StatusRecovery, "target no longer descends from the task base; automatic integration refused because the target moved behind the recorded base", true)
+	case targetUnrelated:
+		return deferIntegration(store, task, StatusRecovery, "target no longer descends from the task base; automatic integration refused because the target has unrelated history", true)
+	}
+	excludedHistory := targetSHA
+	if relation == targetDivergedBase {
+		excludedHistory = base
+	}
+	findings, err := forbiddenHistory(repository, resultCommit, excludedHistory)
 	if err != nil {
 		return deferIntegration(store, task, StatusRecovery, err.Error(), true)
 	}
@@ -666,13 +688,6 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 			return true, err
 		}
 		return true, nil
-	}
-	targetDescends, ancestryErr := isAncestorChecked(repository, base, targetSHA)
-	if ancestryErr != nil {
-		return deferIntegration(store, task, StatusRecovery, ancestryErr.Error(), true)
-	}
-	if !targetDescends {
-		return deferIntegration(store, task, StatusRecovery, "target no longer descends from the task base; automatic integration refused", true)
 	}
 	checkout, err := targetCheckout(repository, target)
 	if err != nil {
@@ -861,12 +876,16 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	targetDescends, err := isAncestorChecked(repository, base, targetSHA)
+	relation, err := targetHistoryRelation(repository, base, targetSHA)
 	if err != nil {
 		return nil, err
 	}
-	if !targetDescends {
-		return nil, fail("target no longer descends from the recorded task base")
+	task["integration_target_relation"] = relation
+	switch relation {
+	case targetRewoundBase:
+		return nil, fail("target no longer descends from the recorded task base because it moved behind that base")
+	case targetUnrelated:
+		return nil, fail("target no longer descends from the recorded task base because it has unrelated history")
 	}
 	alreadyPresent, err := isAncestorChecked(repository, resultCommit, targetSHA)
 	if err != nil {
@@ -875,7 +894,11 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if alreadyPresent {
 		return Record{"result_commit": resultCommit, "published_commit": targetSHA, "strategy": "already-present"}, nil
 	}
-	findings, err := forbiddenHistory(repository, resultCommit, targetSHA)
+	excludedHistory := targetSHA
+	if relation == targetDivergedBase {
+		excludedHistory = base
+	}
+	findings, err := forbiddenHistory(repository, resultCommit, excludedHistory)
 	if err != nil {
 		return nil, err
 	}
@@ -935,8 +958,14 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if current != resultCommit || len(currentChanges.Normal) > 0 {
 		return nil, fail("task worktree changed while publish was validating")
 	}
-	if strategy == "rebase" {
+	if strings.HasPrefix(strategy, "rebase") {
 		if err := synchronizePublishedRebase(path, base, targetSHA, resultCommit, candidateHead); err != nil {
+			return nil, err
+		}
+		task["base_sha"] = targetSHA
+		task["result_commit"] = candidateHead
+		task["published_rebased_from_base"] = base
+		if err := store.Save(task); err != nil {
 			return nil, err
 		}
 	}

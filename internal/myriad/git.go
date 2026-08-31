@@ -9,6 +9,13 @@ import (
 	"strings"
 )
 
+const (
+	targetDescendsBase = "descends-base"
+	targetRewoundBase  = "rewound-before-base"
+	targetDivergedBase = "diverged-from-base"
+	targetUnrelated    = "unrelated-history"
+)
+
 func gitCommand(cwd string, check bool, args ...string) (commandResult, error) {
 	argv := append([]string{"git"}, args...)
 	if check {
@@ -78,6 +85,34 @@ func isAncestorChecked(repository, older, newer string) (bool, error) {
 		return false, nil
 	}
 	return false, fail("cannot compare commit ancestry %s..%s", older, newer)
+}
+
+func targetHistoryRelation(repository, base, target string) (string, error) {
+	baseOnTarget, err := isAncestorChecked(repository, base, target)
+	if err != nil {
+		return "", err
+	}
+	if baseOnTarget {
+		return targetDescendsBase, nil
+	}
+	targetOnBase, err := isAncestorChecked(repository, target, base)
+	if err != nil {
+		return "", err
+	}
+	if targetOnBase {
+		return targetRewoundBase, nil
+	}
+	common, err := gitCommand(repository, false, "merge-base", base, target)
+	if err != nil {
+		return "", err
+	}
+	if common.ExitCode == 0 && strings.TrimSpace(common.Stdout) != "" {
+		return targetDivergedBase, nil
+	}
+	if common.ExitCode == 1 {
+		return targetUnrelated, nil
+	}
+	return "", fail("cannot find a common ancestor for %s..%s", base, target)
 }
 
 func repoKey(repository string) (string, error) {
