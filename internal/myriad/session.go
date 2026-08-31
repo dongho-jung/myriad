@@ -171,11 +171,6 @@ func acquireCheckoutSession(store *Store, checkout string, recordSession bool, o
 		reservation.Release(store, checkout, options.Identity)
 		return nil, err
 	}
-	inbox, _ := emptyInbox(sessionID)
-	if err := writeSessionInbox(store, inbox); err != nil {
-		reservation.Release(store, checkout, options.Identity)
-		return nil, err
-	}
 	metadata, err := checkoutSessionMetadata(store, checkout, sessionID, options)
 	if err != nil {
 		reservation.Release(store, checkout, options.Identity)
@@ -186,8 +181,24 @@ func acquireCheckoutSession(store *Store, checkout string, recordSession bool, o
 		reservation.Release(store, checkout, options.Identity)
 		return nil, err
 	}
-	payload, _ := marshalPrivate(metadata)
+	payload, err := marshalPrivate(metadata)
+	if err != nil {
+		reservation.Release(store, checkout, options.Identity)
+		return nil, err
+	}
+	if len(payload) > maxJSONBytes {
+		reservation.Release(store, checkout, options.Identity)
+		return nil, fail("checkout session metadata is too large")
+	}
+	inbox, _ := emptyInbox(sessionID)
+	if err := writeSessionInbox(store, inbox); err != nil {
+		reservation.Release(store, checkout, options.Identity)
+		return nil, err
+	}
 	if err := atomicWrite(path, payload, 0o600); err != nil {
+		if inboxPath, pathErr := store.InboxPath(sessionID); pathErr == nil {
+			_ = os.Remove(inboxPath)
+		}
 		reservation.Release(store, checkout, options.Identity)
 		return nil, err
 	}
@@ -212,7 +223,13 @@ func updateSessionMetadata(path, sessionID string, updates Record) error {
 	for key, update := range updates {
 		value[key] = update
 	}
-	payload, _ := marshalPrivate(value)
+	payload, err := marshalPrivate(value)
+	if err != nil {
+		return err
+	}
+	if len(payload) > maxJSONBytes {
+		return fail("checkout session metadata is too large")
+	}
 	return atomicWrite(path, payload, 0o600)
 }
 
@@ -261,8 +278,11 @@ func readActiveCheckoutSession(store *Store, checkout string) Record {
 	lockPath, _ := store.CheckoutLockPath(checkout, identity)
 	for attempt := 0; attempt < 10; attempt++ {
 		var value Record
-		if readJSON(metadataPath, maxJSONBytes, &value) == nil && validCheckoutSession(value, checkout, "") && lockFileBusy(lockPath) {
-			return value
+		if readJSON(metadataPath, maxJSONBytes, &value) == nil && validCheckoutSession(value, checkout, "") {
+			busy, lockErr := lockFileBusy(lockPath)
+			if lockErr == nil && busy {
+				return value
+			}
 		}
 		if attempt < 9 {
 			time.Sleep(10 * time.Millisecond)
@@ -292,7 +312,8 @@ func pruneDeadSessionMetadata(store *Store) int {
 		identity := common + "\x00" + checkout
 		expected, _ := store.CheckoutSessionPath(checkout, identity)
 		lockPath, _ := store.CheckoutLockPath(checkout, identity)
-		if expected != path || lockFileBusy(lockPath) {
+		busy, lockErr := lockFileBusy(lockPath)
+		if expected != path || lockErr != nil || busy {
 			continue
 		}
 		removeSessionMetadata(store, checkout, sessionID, identity)
@@ -368,8 +389,11 @@ func activeNotificationSessions(store *Store, repository string) []Record {
 		identity := common + "\x00" + checkout
 		expected, _ := store.CheckoutSessionPath(checkout, identity)
 		lockPath, _ := store.CheckoutLockPath(checkout, identity)
-		if expected == path && validCheckoutSession(value, checkout, common) && lockFileBusy(lockPath) {
-			result = append(result, value)
+		if expected == path && validCheckoutSession(value, checkout, common) {
+			busy, lockErr := lockFileBusy(lockPath)
+			if lockErr == nil && busy {
+				result = append(result, value)
+			}
 		}
 	}
 	sort.SliceStable(result, func(i, j int) bool {

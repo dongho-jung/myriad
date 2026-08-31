@@ -1,6 +1,7 @@
 package myriad
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -161,6 +162,78 @@ func TestSessionMetadataUpdatesAreSerialized(t *testing.T) {
 		if !ok || value != index {
 			t.Fatalf("missing serialized update %d in %s", index, describe(metadata))
 		}
+	}
+}
+
+func TestSessionMetadataRejectsOversizedUpdate(t *testing.T) {
+	store := testStore(t)
+	repository := testRepository(t)
+	reservation, err := acquireCheckoutSession(store, repository, true, sessionOptions{Repository: repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reservation.Release(store, repository, "")
+
+	if err := updateSessionMetadata(reservation.SessionPath, reservation.SessionID, Record{
+		"oversized": strings.Repeat("x", maxJSONBytes),
+	}); err == nil {
+		t.Fatal("oversized session metadata update was accepted")
+	}
+	var metadata Record
+	if err := readJSON(reservation.SessionPath, maxJSONBytes, &metadata); err != nil {
+		t.Fatalf("existing session metadata was corrupted: %v", err)
+	}
+	if _, exists := metadata["oversized"]; exists {
+		t.Fatal("rejected update changed session metadata")
+	}
+}
+
+func TestSessionAcquisitionRejectsOversizedMetadataWithoutArtifacts(t *testing.T) {
+	store := testStore(t)
+	repository := testRepository(t)
+	reservation, err := acquireCheckoutSession(store, repository, true, sessionOptions{
+		Repository: repository,
+		Agent:      strings.Repeat("x", maxJSONBytes),
+	})
+	if err == nil || reservation != nil {
+		if reservation != nil {
+			reservation.Release(store, repository, "")
+		}
+		t.Fatal("oversized initial session metadata was accepted")
+	}
+	for _, directory := range []string{store.Sessions, store.Inboxes} {
+		entries, readErr := os.ReadDir(directory)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("failed session acquisition left artifacts in %s: %v", directory, entries)
+		}
+	}
+
+	retry, err := acquireCheckoutSession(store, repository, false, sessionOptions{Repository: repository})
+	if err != nil || retry == nil {
+		t.Fatalf("failed session acquisition retained checkout locks: (%v, %v)", retry, err)
+	}
+	retry.Release(store, repository, "")
+}
+
+func TestLockProbeReportsUnsafePath(t *testing.T) {
+	busy, err := lockFileBusy(t.TempDir())
+	if err == nil || busy {
+		t.Fatalf("directory lock probe = (%t, %v), want a reported error", busy, err)
+	}
+}
+
+func TestTaskContextRejectsOversizedPayload(t *testing.T) {
+	store := testStore(t)
+	taskID := "oversized-context"
+	if err := writeTaskContext(store, taskID, Record{"oversized": strings.Repeat("x", maxJSONBytes)}); err == nil {
+		t.Fatal("oversized task context was accepted")
+	}
+	path, _ := store.ContextPath(taskID)
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected task context created an artifact: %v", err)
 	}
 }
 

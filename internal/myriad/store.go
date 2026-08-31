@@ -351,13 +351,18 @@ func (store *Store) CheckoutLock(checkout, identity string, blocking bool) (*fil
 	return acquireFileLock("checkout "+checkout, path, true, blocking)
 }
 
-func lockFileBusy(path string) bool {
+func lockFileBusy(path string) (bool, error) {
 	lock, err := acquireFileLock("probe", path, true, false)
 	if err != nil {
-		return isLockBusy(err)
+		if isLockBusy(err) {
+			return true, nil
+		}
+		return false, err
 	}
-	_ = lock.Unlock()
-	return false
+	if err := lock.Unlock(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func nextWorktreeNumber(tasks []Record) int {

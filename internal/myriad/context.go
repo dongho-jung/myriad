@@ -172,6 +172,9 @@ func writeTaskContext(store *Store, taskID string, context Record) error {
 	if err != nil {
 		return err
 	}
+	if len(payload) > maxJSONBytes {
+		return fail("task context is too large: %s", taskID)
+	}
 	path, _ := store.ContextPath(taskID)
 	return atomicWrite(path, payload, 0o600)
 }
