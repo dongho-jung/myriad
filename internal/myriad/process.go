@@ -34,7 +34,7 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 	cmd.Stderr = os.Stderr
 	cmd.Env = environment
 	foregroundPGID, err := unix.Getpgid(0)
-	if err != nil || foregroundPGID <= 1 {
+	if err != nil || foregroundPGID <= 0 {
 		return supervisedResult{}, fail("cannot identify foreground process group")
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -103,7 +103,7 @@ func supervisor(raw []string) (int, error) {
 	sessionPath := os.Getenv(envLockSessionPath)
 	sessionID := os.Getenv(envLockSessionID)
 	foregroundPGID, err := strconv.Atoi(os.Getenv(envForegroundPGID))
-	if err != nil || foregroundPGID <= 1 {
+	if err != nil || foregroundPGID <= 0 {
 		return 2, fail("supervisor received an invalid foreground process group")
 	}
 	if (sessionPath == "") != (sessionID == "") {
