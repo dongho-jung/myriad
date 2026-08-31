@@ -424,6 +424,41 @@ func TestManualIntegrationPolicyLeavesReadyCommit(t *testing.T) {
 	}
 }
 
+func TestAttachmentFinalizationReportsLifecycleError(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	task["attachment_session_id"] = "attachment-session"
+	task["status"] = StatusRunning
+	task["worktree_path"] = repository
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	results := finalizeSessionAttachments(store, "attachment-session", 0, false)
+	if len(results) != 1 || stringValue(results[0], "reason") == "" {
+		t.Fatalf("attachment error was not reported: %s", describe(results))
+	}
+}
+
+func TestAttachmentLeaseRejectsInvalidOwner(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	if err := startAttachmentLease(store, task, Record{"pid": 0}); err == nil {
+		t.Fatal("attachment lease accepted an invalid owner")
+	}
+	identity, err := taskCheckoutIdentity(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lock, err := store.CheckoutLock(stringValue(task, "worktree_path"), identity, false)
+	if err != nil {
+		t.Fatalf("invalid attachment owner retained checkout lease: %v", err)
+	}
+	_ = lock.Unlock()
+}
+
 func TestIntegrateCommandReturnsResultInspectionError(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)

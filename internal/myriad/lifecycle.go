@@ -83,7 +83,7 @@ func launchForTask(store *Store, task Record, command []string, integrate bool, 
 		for _, result := range attachmentResults {
 			ids = append(ids, result["task_id"])
 			status := stringValue(result, "status")
-			succeeded := status == StatusIntegrated || status == StatusCompleted || status == StatusReady && !boolValue(result, "auto_integrate", true)
+			succeeded := stringValue(result, "reason") == "" && (status == StatusIntegrated || status == StatusCompleted || status == StatusReady && !boolValue(result, "auto_integrate", true))
 			if !succeeded {
 				failures = append(failures, result)
 			}
@@ -586,17 +586,31 @@ func finalizeSessionAttachments(store *Store, sessionID string, agentExitCode in
 			continue
 		}
 		task, loadErr := store.Load(stringValue(snapshot, "task_id"))
-		if loadErr == nil && (stringValue(task, "status") == StatusCreated || stringValue(task, "status") == StatusRunning) {
+		result := Record{"task_id": snapshot["task_id"], "status": snapshot["status"], "auto_integrate": boolValue(snapshot, "auto_integrate", true)}
+		if loadErr != nil {
+			result["reason"] = loadErr.Error()
+			results = append(results, result)
+			_ = lock.Unlock()
+			continue
+		}
+		if stringValue(task, "status") == StatusCreated || stringValue(task, "status") == StatusRunning {
 			delete(task, "process")
 			recordAgentExit(task, agentExitCode, graceful)
 			task["attachment_finished_at"] = now()
-			_ = store.Save(task)
-			_ = finalizeTask(store, task, boolValue(task, "auto_integrate", true), false)
+			if err := store.Save(task); err != nil {
+				result["reason"] = err.Error()
+				results = append(results, result)
+				_ = lock.Unlock()
+				continue
+			}
+			if err := finalizeTask(store, task, boolValue(task, "auto_integrate", true), false); err != nil {
+				result["reason"] = err.Error()
+			}
 		}
-		if loadErr == nil {
-			results = append(results, Record{"task_id": task["task_id"], "status": task["status"], "auto_integrate": boolValue(task, "auto_integrate", true)})
-			fmt.Printf("attachment %s: %s\n", stringValue(task, "task_id"), stringValue(task, "status"))
-		}
+		result["status"] = task["status"]
+		result["auto_integrate"] = boolValue(task, "auto_integrate", true)
+		results = append(results, result)
+		fmt.Printf("attachment %s: %s\n", stringValue(task, "task_id"), stringValue(task, "status"))
 		_ = lock.Unlock()
 	}
 	return results
@@ -604,7 +618,10 @@ func finalizeSessionAttachments(store *Store, sessionID string, agentExitCode in
 
 func startAttachmentLease(store *Store, task Record, owner Record) error {
 	worktree := stringValue(task, "worktree_path")
-	identity, _ := taskCheckoutIdentity(task)
+	identity, err := taskCheckoutIdentity(task)
+	if err != nil {
+		return err
+	}
 	lock, err := store.CheckoutLock(worktree, identity, false)
 	if err != nil {
 		return err
@@ -614,7 +631,11 @@ func startAttachmentLease(store *Store, task Record, owner Record) error {
 		_ = lock.Unlock()
 		return err
 	}
-	ownerPID, _ := intValue(owner["pid"])
+	ownerPID, ok := intValue(owner["pid"])
+	if !ok || ownerPID <= 1 || stringValue(owner, "start") == "" {
+		_ = lock.Unlock()
+		return fail("attachment lease has no valid owner")
+	}
 	cmd := exec.Command(executable, internalLease)
 	cmd.ExtraFiles = []*os.File{lock.File}
 	cmd.Env = overlayEnvironment(os.Environ(), map[string]string{
@@ -668,7 +689,10 @@ func attachRepository(store *Store, requested string) error {
 	if owner == nil || stringValue(owner, "role") != "lock-supervisor" || !processAlive(owner) || !processIdentityEqual(owner, parentOwner) {
 		return fail("managed task supervisor is no longer active")
 	}
-	requested, _ = canonical(requested)
+	requested, err = canonical(requested)
+	if err != nil {
+		return err
+	}
 	if info, err := os.Stat(requested); err != nil || !info.IsDir() {
 		return fail("secondary repository path does not exist: %s", requested)
 	}
@@ -680,7 +704,10 @@ func attachRepository(store *Store, requested string) error {
 	if err != nil {
 		return err
 	}
-	common, _ := gitCommonDir(repository)
+	common, err := gitCommonDir(repository)
+	if err != nil {
+		return err
+	}
 	if common == stringValue(parent, "git_common_dir") {
 		return fail("the requested path belongs to the task's existing repository")
 	}
@@ -715,10 +742,15 @@ func attachRepository(store *Store, requested string) error {
 	task["attachment_parent_task_id"] = parentID
 	task["attachment_source_path"] = requested
 	task["process"] = cloneRecord(owner)
-	_ = setStatus(store, task, StatusRunning, "")
+	if err := setStatus(store, task, StatusRunning, ""); err != nil {
+		_ = activity.Unlock()
+		return err
+	}
 	if err := startAttachmentLease(store, task, owner); err != nil {
 		_ = activity.Unlock()
-		_ = setStatus(store, task, StatusRecovery, "attachment checkout lease failed: "+err.Error())
+		if statusErr := setStatus(store, task, StatusRecovery, "attachment checkout lease failed: "+err.Error()); statusErr != nil {
+			return fail("%v; cannot preserve attachment failure: %v", err, statusErr)
+		}
 		return err
 	}
 	_ = activity.Unlock()
