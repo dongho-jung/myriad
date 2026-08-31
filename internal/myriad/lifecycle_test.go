@@ -38,6 +38,20 @@ func TestRefreshCompletesEmptyPreProvisionRecovery(t *testing.T) {
 	}
 }
 
+func TestTaskKeepsDotDotPrefixedWorkingDirectory(t *testing.T) {
+	repository := testRepository(t)
+	testCommitFile(t, repository, "..config/tracked.txt", "nested\n", "test: add nested directory")
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{
+		LaunchCWD: filepath.Join(repository, "..config"),
+	})
+	want := filepath.Join(stringValue(task, "worktree_path"), "..config")
+	if got := taskConfiguredWorkingDirectory(task); got != want {
+		t.Fatalf("managed working directory = %q, want %q", got, want)
+	}
+	finishTestTask(t, store, task, false)
+}
+
 func TestTaskIntegratesFastForwardAndCleansUp(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)

@@ -75,7 +75,7 @@ func createTask(store *Store, options createTaskOptions) (Record, error) {
 	}
 	worktree := filepath.Join(store.Worktrees, repositoryKey, taskID)
 	relative, err := filepath.Rel(checkout, cwd)
-	if err != nil || strings.HasPrefix(relative, "..") {
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		relative = "."
 	}
 	owner := processRecord(os.Getpid(), "launcher", 0)
