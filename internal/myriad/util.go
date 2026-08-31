@@ -38,7 +38,7 @@ func randomHex(bytesCount int) (string, error) {
 }
 
 func validateIdentifier(value, label string) error {
-	if value == "" || !identifierPattern.MatchString(value) {
+	if value == "" || value == "." || value == ".." || !identifierPattern.MatchString(value) {
 		return fail("invalid %s: %q", label, value)
 	}
 	return nil

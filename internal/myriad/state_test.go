@@ -19,6 +19,14 @@ func TestDecodeJSONRejectsTrailingDocument(t *testing.T) {
 	}
 }
 
+func TestIdentifierRejectsPathSegments(t *testing.T) {
+	for _, value := range []string{".", ".."} {
+		if err := validateIdentifier(value, "task id"); err == nil {
+			t.Errorf("path segment %q was accepted as an identifier", value)
+		}
+	}
+}
+
 func TestStoreRejectsLegacySchema(t *testing.T) {
 	store := testStore(t)
 	path := filepath.Join(store.Tasks, "legacy.json")
