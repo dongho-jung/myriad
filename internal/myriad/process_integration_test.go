@@ -40,6 +40,19 @@ func waitForFile(t *testing.T, path string) {
 	t.Fatalf("timed out waiting for %s", path)
 }
 
+func readPIDFile(t *testing.T, path string) int {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 1 {
+		t.Fatalf("invalid pid in %s: %q, %v", path, raw, err)
+	}
+	return pid
+}
+
 func waitForProcessExit(t *testing.T, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -464,6 +477,182 @@ func TestSupervisorDeathStopsAgentBeforeLeaseRelease(t *testing.T) {
 		t.Fatalf("checkout lease remained after agent termination: %v", err)
 	}
 	_ = lock.Unlock()
+}
+
+func TestForcedSessionTerminationIsIsolatedAndRecoverable(t *testing.T) {
+	myriad, helper := testMyriadBinaries(t)
+	for _, termination := range []string{"agent", "supervisor", "launcher"} {
+		t.Run(termination, func(t *testing.T) {
+			repository := testRepository(t)
+			store := testStore(t)
+			root := t.TempDir()
+			targetReady := filepath.Join(root, "target-ready")
+			targetRelease := filepath.Join(root, "target-release")
+			peerReady := filepath.Join(root, "peer-ready")
+			peerRelease := filepath.Join(root, "peer-release")
+
+			target := exec.Command(myriad, "start", "--agent", "custom", "--task", "forced-target", "--quiet", "--", helper, "commit-wait", "forced-result.txt", targetReady, targetRelease)
+			target.Dir = repository
+			target.Env = os.Environ()
+			peer := exec.Command(myriad, "start", "--agent", "custom", "--task", "unaffected-peer", "--quiet", "--", helper, "wait", peerReady, peerRelease)
+			peer.Dir = repository
+			peer.Env = os.Environ()
+			if err := target.Start(); err != nil {
+				t.Fatal(err)
+			}
+			targetWaited := false
+			peerStarted := false
+			peerWaited := false
+			defer func() {
+				_ = os.WriteFile(targetRelease, []byte("release\n"), 0o600)
+				_ = os.WriteFile(peerRelease, []byte("release\n"), 0o600)
+				if !targetWaited {
+					_ = target.Process.Kill()
+					_ = target.Wait()
+				}
+				if peerStarted && !peerWaited {
+					_ = peer.Process.Kill()
+					_ = peer.Wait()
+				}
+				for _, task := range store.All(false) {
+					owner := recordMap(task, "process")
+					if processAlive(owner) {
+						pid, _ := intValue(owner["pid"])
+						_ = unix.Kill(pid, unix.SIGKILL)
+					}
+				}
+			}()
+			if err := peer.Start(); err != nil {
+				t.Fatal(err)
+			}
+			peerStarted = true
+			waitForFile(t, targetReady)
+			waitForFile(t, peerReady)
+
+			targetAgentPID := readPIDFile(t, targetReady)
+			peerAgentPID := readPIDFile(t, peerReady)
+			var targetTask, peerTask Record
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				for _, task := range store.All(false) {
+					switch stringValue(task, "description") {
+					case "forced-target":
+						targetTask = task
+					case "unaffected-peer":
+						peerTask = task
+					}
+				}
+				if targetTask != nil && peerTask != nil && processAlive(targetTask["process"]) && processAlive(peerTask["process"]) {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if targetTask == nil || peerTask == nil {
+				t.Fatalf("concurrent running tasks did not appear: %s", describe(store.All(true)))
+			}
+			targetSupervisorPID, _ := intValue(recordMap(targetTask, "process")["pid"])
+			if targetSupervisorPID <= 1 {
+				t.Fatal("target task has no valid supervisor pid")
+			}
+
+			switch termination {
+			case "agent":
+				if err := unix.Kill(targetAgentPID, unix.SIGKILL); err != nil {
+					t.Fatal(err)
+				}
+			case "supervisor":
+				if err := unix.Kill(targetSupervisorPID, unix.SIGKILL); err != nil {
+					t.Fatal(err)
+				}
+			case "launcher":
+				if err := target.Process.Kill(); err != nil {
+					t.Fatal(err)
+				}
+				if err := target.Wait(); err == nil {
+					t.Fatal("SIGKILLed target launcher unexpectedly exited successfully")
+				}
+				targetWaited = true
+				if processStart(targetAgentPID) == "" || !processAlive(targetTask["process"]) {
+					t.Fatal("launcher death prematurely stopped the supervised target session")
+				}
+				if err := unix.Kill(targetSupervisorPID, unix.SIGKILL); err != nil {
+					t.Fatal(err)
+				}
+			}
+			waitForProcessExit(t, targetAgentPID)
+			if termination != "launcher" {
+				if err := target.Wait(); err == nil {
+					t.Fatal("force-terminated target unexpectedly exited successfully")
+				}
+				targetWaited = true
+			} else {
+				waitForProcessExit(t, targetSupervisorPID)
+				refreshInterruptedTasks(store, repository)
+			}
+
+			if processStart(peerAgentPID) == "" {
+				t.Fatal("terminating one session stopped its peer agent")
+			}
+			currentPeer, err := store.Load(stringValue(peerTask, "task_id"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !processAlive(currentPeer["process"]) {
+				t.Fatal("terminating one session stopped its peer supervisor")
+			}
+			identity, err := taskCheckoutIdentity(currentPeer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if lock, err := store.CheckoutLock(stringValue(currentPeer, "worktree_path"), identity, false); err == nil {
+				_ = lock.Unlock()
+				t.Fatal("peer checkout lease was released by another session's termination")
+			} else if !isLockBusy(err) {
+				t.Fatal(err)
+			}
+
+			if err := os.WriteFile(peerRelease, []byte("release\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := peer.Wait(); err != nil {
+				t.Fatalf("unaffected peer did not finish cleanly: %v", err)
+			}
+			peerWaited = true
+
+			currentTarget, err := store.Load(stringValue(targetTask, "task_id"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status := stringValue(currentTarget, "status"); status != StatusRecovery {
+				t.Fatalf("force-terminated task status = %s, reason = %s", status, stringValue(currentTarget, "status_reason"))
+			}
+			result := stringValue(currentTarget, "result_commit")
+			if result == "" {
+				t.Fatal("force-terminated task did not preserve its committed result")
+			}
+
+			recovered := exec.Command(myriad, "recover", stringValue(currentTarget, "task_id"), "--agent", "custom", "--new-session", "--quiet", "--", helper, "noop", "unused")
+			recovered.Dir = repository
+			recovered.Env = os.Environ()
+			if output, err := recovered.CombinedOutput(); err != nil {
+				t.Fatalf("force-terminated task recovery failed: %v\n%s", err, output)
+			}
+			integrated, err := store.Load(stringValue(currentTarget, "task_id"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status := stringValue(integrated, "status"); status != StatusIntegrated {
+				t.Fatalf("recovered task status = %s, reason = %s", status, stringValue(integrated, "status_reason"))
+			}
+			if got := stringValue(integrated, "integrated_commit"); got != result {
+				t.Fatalf("integrated commit = %s, preserved result = %s", got, result)
+			}
+			contents, err := os.ReadFile(filepath.Join(repository, "forced-result.txt"))
+			if err != nil || string(contents) != "committed by agent\n" {
+				t.Fatalf("recovered result was not integrated: %q, %v", contents, err)
+			}
+		})
+	}
 }
 
 func TestSupervisorKeepsCheckoutLockedAfterLauncherDies(t *testing.T) {

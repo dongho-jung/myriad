@@ -44,7 +44,10 @@ func main() {
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-	case "commit", "commit-fail":
+	case "commit", "commit-fail", "commit-wait":
+		if os.Args[1] == "commit-wait" && len(os.Args) < 5 {
+			os.Exit(2)
+		}
 		path := os.Args[2]
 		if err := os.WriteFile(path, []byte("committed by agent\n"), 0o600); err != nil {
 			os.Exit(11)
@@ -59,6 +62,17 @@ func main() {
 		}
 		if os.Args[1] == "commit-fail" {
 			os.Exit(13)
+		}
+		if os.Args[1] == "commit-wait" {
+			if err := os.WriteFile(os.Args[3], []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+				os.Exit(17)
+			}
+			for {
+				if _, err := os.Stat(os.Args[4]); err == nil {
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
 		}
 	case "noop":
 		return
