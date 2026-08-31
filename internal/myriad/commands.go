@@ -306,15 +306,17 @@ func recoverSelected(store *Store, tasks []Record, options launchOptions) (int, 
 	return 0, nil
 }
 
-func defaultChatResumeCommand(sessionID string, last, includeNonInteractive bool) ([]string, error) {
-	if sessionID != "" && last {
-		return nil, fail("choose a session id or --last, not both")
+func defaultChatResumeCommand(sessionID string, last, all, includeNonInteractive bool) ([]string, error) {
+	if sessionID != "" && (last || all) {
+		return nil, fail("choose a session id or --last/--all, not both")
 	}
 	command := []string{"codex", "resume", "--dangerously-bypass-approvals-and-sandbox", "-c", `tui.resume_cwd="current"`}
 	if sessionID != "" {
 		command = append(command, sessionID)
 	} else {
-		command = append(command, "--all")
+		if all {
+			command = append(command, "--all")
+		}
 		if last {
 			command = append(command, "--last")
 		}
@@ -324,34 +326,8 @@ func defaultChatResumeCommand(sessionID string, last, includeNonInteractive bool
 	}
 	return command, nil
 }
-
-func resumeArgumentsHaveSession(arguments []string) bool {
-	for index := 0; index < len(arguments); {
-		value := arguments[index]
-		if value == "--" {
-			return index+1 < len(arguments)
-		}
-		if value == "--last" || value == "--all" {
-			return true
-		}
-		if codexGlobalValueOptions[value] {
-			index += 2
-			continue
-		}
-		if strings.HasPrefix(value, "-") {
-			index++
-			continue
-		}
-		return true
-	}
-	return false
-}
-
 func passthroughChatResumeCommand(arguments []string) []string {
 	command := []string{"codex", "resume", "--dangerously-bypass-approvals-and-sandbox", "-c", `tui.resume_cwd="current"`}
-	if !resumeArgumentsHaveSession(arguments) {
-		command = append(command, "--all")
-	}
 	return append(command, arguments...)
 }
 
@@ -376,7 +352,7 @@ func resumeTaskCommand(store *Store, options resumeOptions) (int, error) {
 	command := passthroughChatResumeCommand(options.Arguments)
 	var err error
 	if len(options.Arguments) == 0 {
-		command, err = defaultChatResumeCommand(options.SessionID, options.Last, options.IncludeNonInteractive)
+		command, err = defaultChatResumeCommand(options.SessionID, options.Last, options.All, options.IncludeNonInteractive)
 		if err != nil {
 			return 2, err
 		}

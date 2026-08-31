@@ -117,7 +117,6 @@ func FuzzCLIOptionParsing(f *testing.F) {
 				t.Fatalf("resume arguments = %#v, want %#v", resume.Arguments, command)
 			}
 		}
-		_ = resumeArgumentsHaveSession(arguments)
 	})
 }
 
