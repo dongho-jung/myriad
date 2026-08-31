@@ -126,12 +126,7 @@ func runValidationProcess(command []string, directory string, environment []stri
 }
 
 func appendValidationAttempt(task Record, attempt Record) {
-	history := append([]any{}, recordSlice(task, "validation_attempts")...)
-	history = append(history, attempt)
-	if len(history) > validationHistory {
-		history = history[len(history)-validationHistory:]
-	}
-	task["validation_attempts"] = history
+	appendRecordHistory(task, "validation_attempts", attempt, validationHistory)
 }
 
 func recordValidationOutput(attempt Record, result validationProcessResult) {
@@ -474,11 +469,64 @@ func advanceIntegrationTarget(repository, target, targetSHA, candidateHead, init
 }
 
 func deferIntegration(store *Store, task Record, status, reason string, repositoryReserved bool) (bool, error) {
+	recordIntegrationDiagnostic(task, status, reason, "", "")
 	if err := setStatus(store, task, status, reason); err != nil {
 		return false, err
 	}
 	_, err := cleanupTask(store, task, repositoryReserved, false)
 	return false, err
+}
+
+func recordIntegrationDiagnostic(task Record, status, reason, strategy, integratedCommit string) {
+	diagnostic := Record{
+		"at": now(), "status": status,
+		"base_sha": stringValue(task, "base_sha"), "result_commit": stringValue(task, "result_commit"),
+		"target_branch": stringValue(task, "target_branch"),
+	}
+	switch status {
+	case StatusIntegrated:
+		diagnostic["outcome"] = "integrated"
+	case StatusReady:
+		diagnostic["outcome"] = "queued"
+	case StatusRecovery:
+		diagnostic["outcome"] = "recovery_required"
+	default:
+		diagnostic["outcome"] = strings.ToLower(status)
+	}
+	if reason != "" {
+		diagnostic["reason"] = reason
+	}
+	if strategy != "" {
+		diagnostic["strategy"] = strategy
+	}
+	if integratedCommit != "" {
+		diagnostic["integrated_commit"] = integratedCommit
+	}
+	repository, target := stringValue(task, "repository"), stringValue(task, "target_branch")
+	if repository != "" && target != "" {
+		if targetSHA, err := gitRef(repository, "refs/heads/"+target); err == nil {
+			diagnostic["target_sha"] = targetSHA
+		} else {
+			diagnostic["target_error"] = err.Error()
+		}
+	}
+	for _, key := range []string{"integration_process", "validation_process"} {
+		if process := recordMap(task, key); process != nil {
+			snapshot := cloneRecord(process)
+			snapshot["alive"] = processAlive(process)
+			diagnostic[key] = snapshot
+		}
+	}
+	if blockers, exists := task["integration_blockers"]; exists {
+		diagnostic["blockers"] = blockers
+		delete(task, "integration_blockers")
+	}
+	appendRecordHistory(task, "integration_diagnostics", diagnostic, integrationHistory)
+	task["last_integration_diagnostic"] = diagnostic
+}
+
+func recordIntegrationSuccess(task Record, reason, strategy, commit string) {
+	recordIntegrationDiagnostic(task, StatusIntegrated, reason, strategy, commit)
 }
 
 func queuedReason(store *Store, repository string, task Record, reason string) string {
@@ -499,6 +547,7 @@ func integrateTask(store *Store, task Record) (bool, error) {
 	integrationLock, err := store.Lock(lockName, false)
 	if err != nil {
 		if isLockBusy(err) {
+			task["integration_blockers"] = []any{Record{"kind": "integration_lock", "name": lockName}}
 			return deferIntegration(store, task, StatusReady, "another integration is running; integration queued", false)
 		}
 		return deferIntegration(store, task, StatusRecovery, err.Error(), false)
@@ -517,6 +566,7 @@ func integrateTask(store *Store, task Record) (bool, error) {
 			task["integrated_commit"] = targetSHA
 			task["integration_strategy"] = "already-present"
 			delete(task, "integration_redundant_result")
+			recordIntegrationSuccess(task, "result was already present on target", "already-present", targetSHA)
 			if err := setStatus(store, task, StatusIntegrated, ""); err != nil {
 				return true, err
 			}
@@ -558,6 +608,7 @@ func integrateTask(store *Store, task Record) (bool, error) {
 				_ = held.Unlock()
 			}
 			if isLockBusy(lockErr) {
+				task["integration_blockers"] = []any{Record{"kind": "checkout", "path": path}}
 				return deferIntegration(store, task, StatusReady, queuedReason(store, repository, task, "checkout has an active agent; integration queued: "+path), true)
 			}
 			return deferIntegration(store, task, StatusRecovery, lockErr.Error(), true)
@@ -602,6 +653,8 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 	}
 	if alreadyPresent {
 		task["integrated_commit"] = targetSHA
+		task["integration_strategy"] = "already-present"
+		recordIntegrationSuccess(task, "result was already present on target", "already-present", targetSHA)
 		if err := setStatus(store, task, StatusIntegrated, "result was already present on target"); err != nil {
 			return true, err
 		}
@@ -686,6 +739,7 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 		task["integrated_commit"] = targetSHA
 		task["integration_strategy"] = "redundant"
 		task["integration_redundant_result"] = resultCommit
+		recordIntegrationSuccess(task, "result changes were already present on target", "redundant", targetSHA)
 		if err := setStatus(store, task, StatusIntegrated, "result changes were already present on target"); err != nil {
 			return false, err
 		}
@@ -700,6 +754,7 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 		task["integrated_commit"] = candidateHead
 		task["integration_strategy"] = strategy
 		delete(task, "integration_redundant_result")
+		recordIntegrationSuccess(task, "", strategy, candidateHead)
 		if err := setStatus(store, task, StatusIntegrated, ""); err != nil {
 			return true, err
 		}

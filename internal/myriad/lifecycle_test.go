@@ -1,6 +1,7 @@
 package myriad
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,6 +112,74 @@ func TestReconcilePreservesInterruptedCommit(t *testing.T) {
 	}
 	if _, err := os.Stat(stringValue(task, "worktree_path")); err != nil {
 		t.Fatalf("interrupted worktree was not preserved: %v", err)
+	}
+}
+
+func TestQueuedIntegrationRecordsSessionBlocker(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	testCommitFile(t, stringValue(task, "worktree_path"), "task.txt", "task\n", "feat: add queued result")
+	recordAgentExit(task, 0, false)
+	if err := inspectResult(store, task, false); err != nil {
+		t.Fatal(err)
+	}
+
+	reservation, err := acquireCheckoutSession(store, repository, true, sessionOptions{Repository: repository})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reservation.Release(store, repository, "")
+	owner := processRecord(os.Getpid(), "lock-supervisor", 0)
+	if err := updateSessionMetadata(reservation.SessionPath, reservation.SessionID, Record{
+		"process": owner, "notification_state": "ready", "notification_ready": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if integrated, err := integrateTask(store, current); err != nil || integrated {
+		t.Fatalf("blocked integration = (%t, %v), want queued", integrated, err)
+	}
+	queued, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostic := recordMap(queued, "last_integration_diagnostic")
+	if stringValue(diagnostic, "outcome") != "queued" || !strings.Contains(stringValue(diagnostic, "reason"), "active agent") {
+		t.Fatalf("unexpected integration diagnostic: %s", describe(diagnostic))
+	}
+	blockers := recordSlice(diagnostic, "blockers")
+	if len(blockers) != 1 || stringValue(anyRecord(blockers[0]), "session_id") != reservation.SessionID {
+		t.Fatalf("session blocker was not retained: %s", describe(blockers))
+	}
+	if detail := integrationRetryFailure(store, stringValue(task, "task_id"), 2, nil); strings.Contains(detail, "<nil>") || !strings.Contains(detail, "active agent") {
+		t.Fatalf("retry detail lost the queue reason: %q", detail)
+	}
+}
+
+func TestLifecycleHistoryIsBounded(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	for index := 0; index < lifecycleHistory+10; index++ {
+		status := StatusRunning
+		if index%2 == 0 {
+			status = StatusReady
+		}
+		if err := setStatus(store, task, status, fmt.Sprintf("transition %d", index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history := recordSlice(task, "lifecycle_history")
+	if len(history) != lifecycleHistory {
+		t.Fatalf("lifecycle history length = %d, want %d", len(history), lifecycleHistory)
+	}
+	if got := stringValue(anyRecord(history[len(history)-1]), "reason"); got != "transition 73" {
+		t.Fatalf("latest lifecycle transition = %q", got)
 	}
 }
 

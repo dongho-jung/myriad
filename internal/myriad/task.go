@@ -247,6 +247,15 @@ func pullRequestsFromTask(task Record) []int {
 }
 
 func setStatus(store *Store, task Record, status, reason string) error {
+	previousStatus := stringValue(task, "status")
+	previousReason := stringValue(task, "status_reason")
+	if previousStatus != status || previousReason != reason {
+		transition := Record{"at": now(), "from": previousStatus, "to": status}
+		if reason != "" {
+			transition["reason"] = reason
+		}
+		appendRecordHistory(task, "lifecycle_history", transition, lifecycleHistory)
+	}
 	task["status"] = status
 	if reason == "" {
 		delete(task, "status_reason")

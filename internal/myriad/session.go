@@ -404,7 +404,18 @@ func activeNotificationSessions(store *Store, repository string) []Record {
 
 func notifyActiveSessions(store *Store, repository string, task Record) int {
 	notified := 0
-	for _, session := range activeNotificationSessions(store, repository) {
+	sessions := activeNotificationSessions(store, repository)
+	if len(sessions) > 0 {
+		blockers := make([]any, 0, len(sessions))
+		for _, session := range sessions {
+			blockers = append(blockers, Record{
+				"kind": "session", "session_id": session["session_id"], "task_id": session["task_id"],
+				"checkout": session["checkout"], "process": session["process"],
+			})
+		}
+		task["integration_blockers"] = blockers
+	}
+	for _, session := range sessions {
 		if _, err := enqueueIntegrationNotice(store, session, task); err != nil {
 			fmt.Fprintf(os.Stderr, "myriad: could not notify active session %s: %v\n", stringValue(session, "session_id"), err)
 			continue

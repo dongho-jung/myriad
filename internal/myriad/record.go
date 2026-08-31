@@ -67,6 +67,15 @@ func recordSlice(record Record, key string) []any {
 	return value
 }
 
+func appendRecordHistory(record Record, key string, value Record, limit int) {
+	history := append([]any{}, recordSlice(record, key)...)
+	history = append(history, value)
+	if limit > 0 && len(history) > limit {
+		history = history[len(history)-limit:]
+	}
+	record[key] = history
+}
+
 func requireString(record Record, key string) (string, error) {
 	value := stringValue(record, key)
 	if value == "" {

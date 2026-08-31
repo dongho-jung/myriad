@@ -101,7 +101,8 @@ func launchForTask(store *Store, task Record, command []string, integrate bool, 
 	if len(handoffTaskIDs) > 0 {
 		retryHandoffIntegrations(store, handoffTaskIDs)
 	}
-	retryReadyIntegrations(store, stringValue(task, "repository"), []string{stringValue(task, "task_id")})
+	excludedRetries := append([]string{stringValue(task, "task_id")}, handoffTaskIDs...)
+	retryReadyIntegrations(store, stringValue(task, "repository"), excludedRetries)
 	if boolValue(task, "agent_exit_graceful", false) {
 		return 0, nil
 	}
@@ -566,11 +567,26 @@ func retryHandoffIntegrations(store *Store, taskIDs []string) bool {
 		seen[taskID] = struct{}{}
 		result, err := integrateTaskCommand(store, taskID, true)
 		if err != nil || result != 0 {
-			fmt.Fprintf(os.Stderr, "myriad: handoff integration for %s remains queued: %v\n", taskID, err)
+			fmt.Fprintf(os.Stderr, "myriad: handoff integration for %s remains queued: %s\n", taskID, integrationRetryFailure(store, taskID, result, err))
 			success = false
 		}
 	}
 	return success
+}
+
+func integrationRetryFailure(store *Store, taskID string, exitCode int, retryErr error) string {
+	if retryErr != nil {
+		return retryErr.Error()
+	}
+	task, err := store.Load(taskID)
+	if err != nil {
+		return fmt.Sprintf("exit %d; current task state unavailable: %v", exitCode, err)
+	}
+	status, reason := stringValue(task, "status"), stringValue(task, "status_reason")
+	if reason != "" {
+		return fmt.Sprintf("%s: %s", status, reason)
+	}
+	return fmt.Sprintf("%s (exit %d)", firstNonempty(status, "unknown status"), exitCode)
 }
 
 func retryReadyIntegrations(store *Store, repository string, excluded []string) bool {

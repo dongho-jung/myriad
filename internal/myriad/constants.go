@@ -26,6 +26,8 @@ const (
 	maxCodexRPCBytes    = 32 * 1024 * 1024
 	validationTailBytes = 16 * 1024
 	validationHistory   = 16
+	integrationHistory  = 32
+	lifecycleHistory    = 64
 	defaultCheckTimeout = time.Hour
 
 	handoffExitCode = 75
