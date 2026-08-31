@@ -273,7 +273,7 @@ func currentHead(task Record) string {
 }
 
 func formatTaskID() (string, error) {
-	random, err := randomHex(3)
+	random, err := randomHex(6)
 	if err != nil {
 		return "", err
 	}

@@ -22,6 +22,21 @@ type createTaskOptions struct {
 	Deferred     bool
 }
 
+func taskIDAvailable(store *Store, repositoryKey, taskID string) (bool, error) {
+	registry, err := store.TaskPath(taskID)
+	if err != nil {
+		return false, err
+	}
+	for _, path := range []string{registry, filepath.Join(store.Worktrees, repositoryKey, taskID)} {
+		if _, err := os.Lstat(path); err == nil {
+			return false, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
 func createTask(store *Store, options createTaskOptions) (Record, error) {
 	cwd, _ := canonical(options.LaunchCWD)
 	checkout, err := repoRoot(cwd)
@@ -139,6 +154,28 @@ func createTask(store *Store, options createTaskOptions) (Record, error) {
 	numberLock, err := store.Lock("worktree-number", true)
 	if err != nil {
 		return nil, err
+	}
+	for attempts := 0; ; attempts++ {
+		available, checkErr := taskIDAvailable(store, repositoryKey, taskID)
+		if checkErr != nil {
+			_ = numberLock.Unlock()
+			return nil, checkErr
+		}
+		if available {
+			break
+		}
+		if attempts == 99 {
+			_ = numberLock.Unlock()
+			return nil, fail("cannot allocate a unique task id")
+		}
+		taskID, err = formatTaskID()
+		if err != nil {
+			_ = numberLock.Unlock()
+			return nil, err
+		}
+		worktree = filepath.Join(store.Worktrees, repositoryKey, taskID)
+		task["task_id"] = taskID
+		task["worktree_path"] = worktree
 	}
 	task["worktree_number"] = nextWorktreeNumber(store.All(false))
 	if err := store.Save(task); err != nil {

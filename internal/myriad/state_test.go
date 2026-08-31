@@ -301,6 +301,38 @@ func TestFallbackTaskSlugUsesCompleteWords(t *testing.T) {
 	}
 }
 
+func TestTaskIDAvailabilityPreservesExistingState(t *testing.T) {
+	store := testStore(t)
+	repositoryKey := "repository-key"
+	taskID := "20260831-120000-abcdef123456"
+	registry, err := store.TaskPath(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registry, []byte("preserve\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if available, err := taskIDAvailable(store, repositoryKey, taskID); err != nil || available {
+		t.Fatalf("existing registry availability = (%t, %v), want unavailable", available, err)
+	}
+	if err := os.Remove(registry); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(store.Worktrees, repositoryKey, taskID)
+	if err := os.MkdirAll(worktree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if available, err := taskIDAvailable(store, repositoryKey, taskID); err != nil || available {
+		t.Fatalf("existing worktree availability = (%t, %v), want unavailable", available, err)
+	}
+	if err := os.Remove(worktree); err != nil {
+		t.Fatal(err)
+	}
+	if available, err := taskIDAvailable(store, repositoryKey, taskID); err != nil || !available {
+		t.Fatalf("unused task id availability = (%t, %v), want available", available, err)
+	}
+}
+
 func TestPullRequestNumberRejectsOverflow(t *testing.T) {
 	if _, err := pullRequestNumber("PR #" + strings.Repeat("9", 100)); err == nil {
 		t.Fatal("overflowing pull request number was accepted")
