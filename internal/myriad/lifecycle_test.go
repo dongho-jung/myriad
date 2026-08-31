@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -110,6 +111,71 @@ func TestReconcilePreservesInterruptedCommit(t *testing.T) {
 	}
 	if _, err := os.Stat(stringValue(task, "worktree_path")); err != nil {
 		t.Fatalf("interrupted worktree was not preserved: %v", err)
+	}
+}
+
+func TestConcurrentTaskCreationIsSerialized(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	const taskCount = 12
+	type creation struct {
+		task Record
+		err  error
+	}
+	start := make(chan struct{})
+	results := make(chan creation, taskCount)
+	var group sync.WaitGroup
+	for index := 0; index < taskCount; index++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			<-start
+			task, err := createTask(store, createTaskOptions{
+				Agent:       "custom",
+				Description: "concurrent lifecycle task",
+				LaunchCWD:   repository,
+			})
+			results <- creation{task: task, err: err}
+		}()
+	}
+	close(start)
+	group.Wait()
+	close(results)
+
+	tasks := make([]Record, 0, taskCount)
+	ids := map[string]bool{}
+	numbers := map[int]bool{}
+	branches := map[string]bool{}
+	paths := map[string]bool{}
+	for result := range results {
+		if result.err != nil {
+			t.Fatalf("concurrent task creation failed: %v", result.err)
+		}
+		task := result.task
+		if !taskWorktreeReady(task) {
+			t.Fatalf("concurrent task was not provisioned: %s", describe(task))
+		}
+		id := stringValue(task, "task_id")
+		number, ok := intValue(task["worktree_number"])
+		if !ok || number <= 0 {
+			t.Fatalf("task has invalid worktree number: %s", describe(task))
+		}
+		branch := stringValue(task, "branch")
+		path := stringValue(task, "worktree_path")
+		if ids[id] || numbers[number] || branches[branch] || paths[path] {
+			t.Fatalf("concurrent allocation collided: %s", describe(task))
+		}
+		ids[id], numbers[number], branches[branch], paths[path] = true, true, true, true
+		tasks = append(tasks, task)
+	}
+	if len(tasks) != taskCount {
+		t.Fatalf("created %d tasks, want %d", len(tasks), taskCount)
+	}
+	for _, task := range tasks {
+		current := finishTestTask(t, store, task, false)
+		if status := stringValue(current, "status"); status != StatusCompleted {
+			t.Fatalf("concurrent task cleanup status = %s", status)
+		}
 	}
 }
 
