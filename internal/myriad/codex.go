@@ -184,6 +184,22 @@ func interactiveCodexCommand(command []string) bool {
 	return subcommand == "" || subcommand == "resume" || subcommand == "fork"
 }
 
+func codexUsesRemoteAppServer(command []string) bool {
+	executable := commandExecutableIndex(command, "codex")
+	if executable < 0 {
+		return false
+	}
+	for _, value := range command[executable+1:] {
+		if value == "--" {
+			return false
+		}
+		if value == "--remote" || strings.HasPrefix(value, "--remote=") {
+			return true
+		}
+	}
+	return false
+}
+
 func normalizeCodexWorkingDirectory(command []string, origin string) ([]string, string, error) {
 	result := append([]string{}, command...)
 	executable := commandExecutableIndex(result, "codex")
@@ -311,10 +327,8 @@ func codexRemoteCommand(command []string, socketPath string, trustedDirectories 
 	if executable < 0 || (subcommand != "" && subcommand != "resume" && subcommand != "fork") {
 		return nil
 	}
-	for _, value := range command[executable+1:] {
-		if value == "--remote" || strings.HasPrefix(value, "--remote=") {
-			return nil
-		}
+	if codexUsesRemoteAppServer(command) {
+		return nil
 	}
 	result := stripManagedCodexTUIConfigs(command, executable)
 	addition := []string{

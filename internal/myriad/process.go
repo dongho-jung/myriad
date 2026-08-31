@@ -155,9 +155,15 @@ func validateForegroundAgentCommand(agent string, command []string, lockManaged 
 	if !lockManaged {
 		return nil
 	}
+	if codexUsesRemoteAppServer(command) {
+		return fail("Codex --remote uses an external App Server lifecycle and cannot run inside a managed Myriad task")
+	}
 	claude := agent == "claude" || commandExecutableIndex(command, "claude") >= 0
 	if !claude {
 		return nil
+	}
+	if executable := commandExecutableIndex(command, "claude"); executable >= 0 && claudeDirectInvocation(command[executable+1:]) {
+		return fail("this Claude command owns a separate session lifecycle and cannot run inside a managed Myriad task")
 	}
 	for _, value := range command {
 		if value == "--background" || value == "--bg" || value == "--tmux" || value == "--worktree" || value == "-w" || strings.HasPrefix(value, "--tmux=") || strings.HasPrefix(value, "--worktree=") {

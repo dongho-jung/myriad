@@ -315,6 +315,7 @@ func TestCodexLauncherRoutesGlobalOptions(t *testing.T) {
 		{[]string{"-m", "gpt-5.6-sol", "resume", "--last"}, routeManagedFresh},
 		{[]string{"-m", "gpt-5.6-sol", "exec", "go test ./..."}, routeManagedFresh},
 		{[]string{"-c", "model=\"gpt-5.6-sol\"", "agents"}, routeDirect},
+		{[]string{"--remote", "unix:///tmp/codex.sock"}, routeDirect},
 		{[]string{"queue", "thread-id", "keep going"}, routeDirect},
 		{[]string{"fix the parser"}, routeDescription},
 		{[]string{"--search"}, routeManaged},
@@ -324,5 +325,30 @@ func TestCodexLauncherRoutesGlobalOptions(t *testing.T) {
 		if got := codexLauncherRoute(test.arguments, command); got != test.want {
 			t.Errorf("arguments %#v route to %s, want %s", test.arguments, got, test.want)
 		}
+	}
+}
+
+func TestManagedTaskRejectsExternalCodexAppServer(t *testing.T) {
+	command := []string{"codex", "--remote", "unix:///tmp/codex.sock"}
+	if err := validateForegroundAgentCommand("codex", command, true); err == nil {
+		t.Fatal("managed task accepted an external Codex App Server")
+	}
+	if codexUsesRemoteAppServer([]string{"codex", "--", "--remote"}) {
+		t.Fatal("prompt text after -- was mistaken for a remote App Server option")
+	}
+}
+
+func TestClaudeSessionManagementRunsDirectly(t *testing.T) {
+	for _, subcommand := range []string{"agents", "attach", "logs", "respawn", "rm", "stop", "kill"} {
+		if !claudeDirectInvocation([]string{subcommand, "session-id"}) {
+			t.Errorf("Claude %s was not routed directly", subcommand)
+		}
+		command := []string{"claude", subcommand, "session-id"}
+		if err := validateForegroundAgentCommand("claude", command, true); err == nil {
+			t.Errorf("managed task accepted Claude %s", subcommand)
+		}
+	}
+	if claudeDirectInvocation([]string{"ultrareview"}) {
+		t.Fatal("Claude ultrareview lost its exact-checkout routing")
 	}
 }

@@ -20,6 +20,9 @@ const (
 )
 
 func codexLauncherRoute(arguments []string, command []string) launcherRoute {
+	if codexUsesRemoteAppServer(command) {
+		return routeDirect
+	}
 	subcommand := codexSubcommand(command)
 	switch subcommand {
 	case "review":
@@ -162,23 +165,34 @@ func claudeCommand(arguments []string) []string {
 	return append([]string{"env", "IS_DEMO=1", "claude", "--ide", "--chrome", "--allow-dangerously-skip-permissions", "--effort", "max", "--permission-mode", "bypassPermissions"}, arguments...)
 }
 
-func launchClaude(store *Store, arguments []string) (int, error) {
-	if len(arguments) > 0 && arguments[0] == "--local" {
-		return directCLI(claudeCommand(arguments[1:]), currentDirectory(), os.Environ())
+var claudeDirectSubcommands = map[string]bool{
+	"agents": true, "attach": true, "auth": true, "auto-mode": true,
+	"doctor": true, "gateway": true, "import": true, "install": true,
+	"kill": true, "logs": true, "mcp": true, "plugin": true,
+	"plugins": true, "project": true, "respawn": true, "rm": true,
+	"setup-token": true, "stop": true, "update": true, "upgrade": true,
+}
+
+func claudeDirectInvocation(arguments []string) bool {
+	if len(arguments) > 0 && claudeDirectSubcommands[arguments[0]] {
+		return true
 	}
-	if len(arguments) > 0 && arguments[0] == "agents" {
-		return directCLI(claudeCommand(arguments), currentDirectory(), os.Environ())
-	}
-	ownsLifecycle := false
 	for _, argument := range arguments {
 		if argument == "--" {
 			break
 		}
 		if argument == "--background" || argument == "--bg" || argument == "--tmux" || argument == "--worktree" || argument == "-w" || argument == "--cloud" || argument == "--environment" || argument == "--remote-control" || argument == "--teleport" || strings.HasPrefix(argument, "--background=") || strings.HasPrefix(argument, "--bg=") || strings.HasPrefix(argument, "--tmux=") || strings.HasPrefix(argument, "--worktree=") || strings.HasPrefix(argument, "--cloud=") || strings.HasPrefix(argument, "--environment=") || strings.HasPrefix(argument, "--remote-control=") || strings.HasPrefix(argument, "--teleport=") {
-			ownsLifecycle = true
+			return true
 		}
 	}
-	if ownsLifecycle {
+	return false
+}
+
+func launchClaude(store *Store, arguments []string) (int, error) {
+	if len(arguments) > 0 && arguments[0] == "--local" {
+		return directCLI(claudeCommand(arguments[1:]), currentDirectory(), os.Environ())
+	}
+	if claudeDirectInvocation(arguments) {
 		if len(arguments) > 0 && arguments[0] == "--new" {
 			arguments = arguments[1:]
 		}
@@ -189,6 +203,9 @@ func launchClaude(store *Store, arguments []string) (int, error) {
 	}
 	if len(arguments) > 0 && arguments[0] == "--new" {
 		remaining := arguments[1:]
+		if claudeDirectInvocation(remaining) {
+			return directCLI(claudeCommand(remaining), currentDirectory(), os.Environ())
+		}
 		if len(remaining) > 0 && (remaining[0] == "ultrareview" || strings.HasPrefix(remaining[0], "-")) {
 			return openTaskCommand(store, launchOptions{Agent: "claude", New: true, Quiet: true, Command: claudeCommand(remaining)})
 		}
@@ -199,7 +216,7 @@ func launchClaude(store *Store, arguments []string) (int, error) {
 		if first == "ultrareview" {
 			return openTaskCommand(store, launchOptions{Agent: "claude", RequireCurrent: true, Quiet: true, Command: claudeCommand(arguments)})
 		}
-		if map[string]bool{"auth": true, "auto-mode": true, "doctor": true, "gateway": true, "import": true, "install": true, "mcp": true, "plugin": true, "plugins": true, "project": true, "setup-token": true, "update": true, "upgrade": true, "-h": true, "--help": true, "-v": true, "--version": true}[first] {
+		if map[string]bool{"-h": true, "--help": true, "-v": true, "--version": true}[first] {
 			return directCLI(claudeCommand(arguments), currentDirectory(), os.Environ())
 		}
 		if strings.HasPrefix(first, "-") {
