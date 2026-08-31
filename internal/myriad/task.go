@@ -113,7 +113,12 @@ func managedWorktreePath(store *Store, task Record) (string, error) {
 	}
 	path, _ := canonical(value)
 	root, _ := canonical(store.Worktrees)
-	if !isWithin(path, root) || filepath.Base(path) != stringValue(task, "task_id") || filepath.Dir(filepath.Dir(path)) != root {
+	taskID := stringValue(task, "task_id")
+	validName := filepath.Base(path) == taskID
+	if boolValue(task, "orphan_discovered", false) {
+		validName = taskID == "orphan-"+sha256Hex([]byte(path))[:12]
+	}
+	if !isWithin(path, root) || !validName || filepath.Dir(filepath.Dir(path)) != root {
 		return "", fail("refused unexpected managed worktree path: %s", path)
 	}
 	return path, nil

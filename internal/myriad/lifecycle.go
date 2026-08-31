@@ -810,16 +810,16 @@ func recordOrphans(store *Store) {
 			if commonErr != nil || rootErr != nil || headErr != nil {
 				continue
 			}
-			taskID := "orphan-" + sha256Hex([]byte(path))[:12]
+			taskID := "orphan-" + sha256Hex([]byte(resolved))[:12]
 			task := Record{
 				"schema_version": TaskRecordSchema, "task_id": taskID,
 				"repository": repository, "git_common_dir": common,
 				"base_sha": head, "branch": strings.TrimSpace(branch.Stdout),
-				"target_branch": nil, "worktree_path": path, "workdir_relative": ".",
+				"target_branch": nil, "worktree_path": resolved, "workdir_relative": ".",
 				"worktree_state": worktreeReady, "agent": "unknown",
 				"description": "unregistered managed worktree", "result_commit": head,
 				"status": StatusRecovery, "status_reason": "orphan discovered; preserved for operator inspection",
-				"created_at": now(),
+				"orphan_discovered": true, "created_at": now(),
 			}
 			_ = store.Save(task)
 		}

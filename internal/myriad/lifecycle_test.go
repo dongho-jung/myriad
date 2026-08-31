@@ -143,6 +143,47 @@ func TestListedWorktreesPreservesUnusualPaths(t *testing.T) {
 	}
 }
 
+func TestRecordedOrphanRemainsManageable(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	path := stringValue(task, "worktree_path")
+	registry, err := store.TaskPath(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(registry); err != nil {
+		t.Fatal(err)
+	}
+
+	recordOrphans(store)
+	var orphan Record
+	for _, candidate := range store.All(true) {
+		if boolValue(candidate, "orphan_discovered", false) {
+			orphan = candidate
+			break
+		}
+	}
+	if orphan == nil {
+		t.Fatal("orphaned worktree was not recorded")
+	}
+	managed, err := managedWorktreePath(store, orphan)
+	if err != nil {
+		t.Fatalf("recorded orphan cannot be managed: %v", err)
+	}
+	resolved, err := canonical(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed != resolved {
+		t.Fatalf("managed orphan path = %q, want %q", managed, resolved)
+	}
+	orphan["worktree_path"] = filepath.Join(filepath.Dir(path), "different")
+	if _, err := managedWorktreePath(store, orphan); err == nil {
+		t.Fatal("orphan identity accepted a different path")
+	}
+}
+
 func TestTaskIntegratesFastForwardAndCleansUp(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)
