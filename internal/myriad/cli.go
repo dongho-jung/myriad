@@ -84,6 +84,17 @@ func Run(arguments []string) int {
 		} else {
 			err = fail("usage: myriad status [TASK_ID]")
 		}
+	case "diagnose":
+		if len(arguments) != 2 {
+			err = fail("usage: myriad diagnose TASK_ID")
+		} else {
+			var diagnostic Record
+			diagnostic, err = taskDiagnostic(store, arguments[1])
+			if err == nil {
+				payload, _ := json.MarshalIndent(diagnostic, "", "  ")
+				fmt.Println(string(payload))
+			}
+		}
 	case "statusline":
 		err = runStatusline(store, arguments[1:])
 	case "publish":
@@ -472,6 +483,7 @@ Usage:
   myriad context --jira KEY...        set Jira display contexts
   myriad context --pr NUMBER...       set pull-request display contexts
   myriad list | status [TASK_ID]      inspect local lifecycle state
+  myriad diagnose TASK_ID             dump refs, processes, blockers, and logs
   myriad inbox | handoff EVENT_ID     coordinate queued integration
   myriad integrate TASK_ID            retry integration
   myriad recover TASK_ID              resume preserved work

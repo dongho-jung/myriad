@@ -765,6 +765,34 @@ func TestPublishRebasesActiveTaskOntoRewrittenTarget(t *testing.T) {
 	if stringValue(current, "base_sha") != target || stringValue(current, "result_commit") != publishedCommit {
 		t.Fatalf("published task checkpoint was not rebased durably: %s", describe(current))
 	}
+	if diagnostic := recordMap(current, "last_publish_diagnostic"); stringValue(diagnostic, "outcome") != "published" || stringValue(diagnostic, "strategy") != "rebase-diverged" {
+		t.Fatalf("successful publish diagnostic was not retained: %s", describe(diagnostic))
+	}
+}
+
+func TestPublishFailureRetainsDiagnostic(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	testCommitFile(t, stringValue(task, "worktree_path"), "tracked.txt", "task\n", "fix: update task copy")
+	testCommitFile(t, repository, "tracked.txt", "target\n", "fix: update target copy")
+	task["status"] = StatusRunning
+	task["process"] = processRecord(os.Getpid(), "agent", 0)
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := publishTaskCheckpoint(store, task); err == nil {
+		t.Fatal("conflicting publish unexpectedly succeeded")
+	}
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostic := recordMap(current, "last_publish_diagnostic")
+	if stringValue(diagnostic, "outcome") != "failed" || !strings.Contains(stringValue(diagnostic, "reason"), "conflict") {
+		t.Fatalf("failed publish diagnostic was not retained: %s", describe(diagnostic))
+	}
 }
 
 func TestTaskRebaseConflictPreservesTarget(t *testing.T) {

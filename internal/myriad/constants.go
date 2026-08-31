@@ -27,6 +27,7 @@ const (
 	validationTailBytes = 16 * 1024
 	validationHistory   = 16
 	integrationHistory  = 32
+	publishHistory      = 32
 	lifecycleHistory    = 64
 	defaultCheckTimeout = time.Hour
 

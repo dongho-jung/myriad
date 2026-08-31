@@ -831,7 +831,45 @@ func finalizeTask(store *Store, task Record, integrate, trustCleanCommit bool) e
 	return nil
 }
 
-func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
+func publishTaskCheckpoint(store *Store, task Record) (published Record, resultErr error) {
+	diagnostic := Record{
+		"started_at": now(), "outcome": "running",
+		"task_id": stringValue(task, "task_id"), "base_sha": stringValue(task, "base_sha"),
+		"target_branch": stringValue(task, "target_branch"), "worktree_path": stringValue(task, "worktree_path"),
+	}
+	defer func() {
+		diagnostic["finished_at"] = now()
+		if resultErr != nil {
+			diagnostic["outcome"] = "failed"
+			diagnostic["reason"] = resultErr.Error()
+		} else {
+			diagnostic["outcome"] = "published"
+			if published != nil {
+				for _, key := range []string{"result_commit", "published_commit", "strategy"} {
+					if value, exists := published[key]; exists {
+						diagnostic[key] = value
+					}
+				}
+			}
+		}
+		if relation := stringValue(task, "integration_target_relation"); relation != "" {
+			diagnostic["target_relation"] = relation
+		}
+		repository, target := stringValue(task, "repository"), stringValue(task, "target_branch")
+		if repository != "" && target != "" {
+			if targetSHA, err := gitRef(repository, "refs/heads/"+target); err == nil {
+				diagnostic["target_sha_after"] = targetSHA
+			} else {
+				diagnostic["target_error_after"] = err.Error()
+			}
+		}
+		appendRecordHistory(task, "publish_diagnostics", diagnostic, publishHistory)
+		task["last_publish_diagnostic"] = diagnostic
+		if saveErr := store.Save(task); saveErr != nil && resultErr == nil {
+			published = nil
+			resultErr = saveErr
+		}
+	}()
 	if stringValue(task, "status") != StatusRunning || !processAlive(task["process"]) {
 		return nil, fail("task is not actively running: %s", stringValue(task, "task_id"))
 	}
@@ -857,6 +895,7 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	diagnostic["result_commit_before"] = resultCommit
 	base := stringValue(task, "base_sha")
 	repository := stringValue(task, "repository")
 	if base == "" {
@@ -905,11 +944,13 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	diagnostic["target_sha_before"] = targetSHA
 	relation, err := targetHistoryRelation(repository, base, targetSHA)
 	if err != nil {
 		return nil, err
 	}
 	task["integration_target_relation"] = relation
+	diagnostic["target_relation"] = relation
 	switch relation {
 	case targetRewoundBase:
 		return nil, fail("target no longer descends from the recorded task base because it moved behind that base")
@@ -965,13 +1006,14 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if candidateHead == "" {
 		return nil, fail("publish candidate conflicts with the current target")
 	}
-	validationTask := cloneRecord(task)
-	valid, validationErr := validateCandidate(nil, validationTask, candidate, targetSHA, candidateHead)
+	diagnostic["candidate_commit"] = candidateHead
+	diagnostic["strategy"] = strategy
+	valid, validationErr := validateCandidate(store, task, candidate, targetSHA, candidateHead)
 	if validationErr != nil {
 		return nil, validationErr
 	}
 	if !valid {
-		return nil, fail("publish candidate failed validation: %s", describe(validationTask["validation_failure"]))
+		return nil, fail("publish candidate failed validation: %s", describe(task["validation_failure"]))
 	}
 	if unchanged, reason := candidateUnchanged(candidate, candidateHead); !unchanged {
 		return nil, fail("publish candidate changed after validation: %s", reason)

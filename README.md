@@ -66,6 +66,7 @@ myriad context --jira KEY...        set display-only Jira contexts
 myriad context --pr NUMBER...       set display-only pull-request contexts
 myriad list                         list tasks
 myriad status [TASK_ID]             inspect task state
+myriad diagnose TASK_ID             dump refs, processes, blockers, and logs
 myriad inbox                        inspect integration handoff notices
 myriad handoff EVENT_ID             release a lease for queued integration
 myriad integrate TASK_ID            retry local integration
@@ -74,6 +75,12 @@ myriad cleanup TASK_ID|--all        remove safe inactive worktrees
 myriad reconcile [--quiet]          repair interrupted lifecycle state
 myriad statusline [--claude]        render active task status
 ```
+
+Task records retain bounded lifecycle, integration, publish, and validation
+histories. Validation entries include the command, process identity, outcome,
+timeout state, and bounded stdout/stderr tails. `myriad diagnose TASK_ID`
+combines those records with live ref ancestry, worktree state, active sessions,
+and `/proc` process state for postmortem debugging.
 
 `myriad attach` must be called from an active managed session before modifying
 another Git repository. It returns a separate managed worktree, commit history,
