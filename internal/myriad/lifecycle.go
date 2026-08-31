@@ -62,7 +62,9 @@ func launchForTask(store *Store, task Record, command []string, integrate bool, 
 				_ = setStatus(store, task, StatusFailed, "agent launch failed: "+launchErr.Error())
 				_, _ = cleanupTask(store, task, false, false)
 			} else {
-				preserveInterruptedTask(store, task, "launcher ended unexpectedly: "+launchErr.Error()+"; resume required")
+				if preserveErr := preserveInterruptedTask(store, task, "launcher ended unexpectedly: "+launchErr.Error()+"; resume required"); preserveErr != nil {
+					return exitCode, fail("%v; cannot preserve interrupted task: %v", launchErr, preserveErr)
+				}
 			}
 		}
 		return exitCode, launchErr
@@ -106,14 +108,14 @@ func launchForTask(store *Store, task Record, command []string, integrate bool, 
 	return exitCode, nil
 }
 
-func preserveInterruptedTask(store *Store, task Record, reason string) {
+func preserveInterruptedTask(store *Store, task Record, reason string) error {
 	delete(task, "process")
 	head := currentHead(task)
 	if head != "" && head != stringValue(task, "base_sha") && isAncestor(stringValue(task, "repository"), stringValue(task, "base_sha"), head) {
 		task["result_commit"] = head
 	}
 	task["interrupted_at"] = now()
-	_ = setStatus(store, task, StatusRecovery, reason)
+	return setStatus(store, task, StatusRecovery, reason)
 }
 
 func interruptedTaskHasNoRepositoryWork(task Record) bool {
@@ -132,17 +134,22 @@ func interruptedTaskHasNoRepositoryWork(task Record) bool {
 	return err == nil && len(changes.Normal) == 0 && len(changes.Ignored) == 0 && currentHead(task) == stringValue(task, "base_sha")
 }
 
-func completeEmptyInterruptedTask(store *Store, task Record) bool {
+func completeEmptyInterruptedTask(store *Store, task Record) (bool, error) {
 	delete(task, "process")
 	delete(task, "agent_exit_code")
 	delete(task, "agent_exit_graceful")
 	delete(task, "interrupted_at")
-	if inspectResult(store, task, false) != nil || stringValue(task, "status") != StatusCompleted {
-		return false
+	if err := inspectResult(store, task, false); err != nil {
+		return false, err
+	}
+	if stringValue(task, "status") != StatusCompleted {
+		return false, nil
 	}
 	task["empty_interruption_resolved_at"] = now()
-	_ = setStatus(store, task, StatusCompleted, "interrupted session had no repository changes; cleaned automatically")
-	return true
+	if err := setStatus(store, task, StatusCompleted, "interrupted session had no repository changes; cleaned automatically"); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func taskBelongsToRepository(task Record, common string) bool {
@@ -173,9 +180,9 @@ func refreshInterruptedTasks(store *Store, repository string) []Record {
 		current, loadErr := store.Load(stringValue(snapshot, "task_id"))
 		if loadErr == nil && !processAlive(current["process"]) {
 			if interruptedTaskHasNoRepositoryWork(current) {
-				completeEmptyInterruptedTask(store, current)
+				_, _ = completeEmptyInterruptedTask(store, current)
 			} else if stringValue(current, "status") == StatusCreated || stringValue(current, "status") == StatusRunning {
-				preserveInterruptedTask(store, current, "agent process ended before lifecycle completion; resume required")
+				_ = preserveInterruptedTask(store, current, "agent process ended before lifecycle completion; resume required")
 			}
 		}
 		_ = lock.Unlock()
@@ -861,11 +868,28 @@ func reconcileOne(store *Store, task Record, integrate bool) error {
 			if err := finalizeTask(store, task, integrate && boolValue(task, "auto_integrate", true), true); err != nil {
 				return err
 			}
+		} else if interruptedTaskHasNoRepositoryWork(task) {
+			completed, err := completeEmptyInterruptedTask(store, task)
+			if err != nil {
+				return err
+			}
+			if !completed {
+				return preserveInterruptedTask(store, task, "agent process ended before lifecycle completion; resume required")
+			}
 		} else {
-			preserveInterruptedTask(store, task, "agent process ended before lifecycle completion; resume required")
+			return preserveInterruptedTask(store, task, "agent process ended before lifecycle completion; resume required")
 		}
 	case StatusCreated:
-		preserveInterruptedTask(store, task, "agent process ended before lifecycle completion; resume required")
+		if interruptedTaskHasNoRepositoryWork(task) {
+			completed, err := completeEmptyInterruptedTask(store, task)
+			if err != nil {
+				return err
+			}
+			if completed {
+				return nil
+			}
+		}
+		return preserveInterruptedTask(store, task, "agent process ended before lifecycle completion; resume required")
 	case StatusIntegrating, StatusValidating:
 		if err := clearInterruptedIntegration(store, task); err != nil {
 			return err

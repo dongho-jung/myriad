@@ -38,6 +38,81 @@ func TestRefreshCompletesEmptyPreProvisionRecovery(t *testing.T) {
 	}
 }
 
+func TestReconcileCompletesEmptyInterruptedTasks(t *testing.T) {
+	for _, deferred := range []bool{false, true} {
+		name := "provisioned"
+		if deferred {
+			name = "reserved"
+		}
+		t.Run(name, func(t *testing.T) {
+			repository := testRepository(t)
+			store := testStore(t)
+			task, err := createTask(store, createTaskOptions{
+				Agent:       "custom",
+				Deferred:    deferred,
+				Description: "empty interrupted task",
+				LaunchCWD:   repository,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !deferred {
+				task["status"] = StatusRunning
+			}
+			delete(task, "process")
+			if err := store.Save(task); err != nil {
+				t.Fatal(err)
+			}
+
+			if code := reconcile(store, false, true); code != 0 {
+				t.Fatalf("reconcile exit code = %d, want 0", code)
+			}
+			current, err := store.Load(stringValue(task, "task_id"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status := stringValue(current, "status"); status != StatusCompleted {
+				t.Fatalf("status = %s, reason = %s", status, stringValue(current, "status_reason"))
+			}
+			if stringValue(current, "empty_interruption_resolved_at") == "" {
+				t.Fatal("reconcile did not record automatic empty-task resolution")
+			}
+			if _, err := os.Stat(stringValue(task, "worktree_path")); !os.IsNotExist(err) {
+				t.Fatalf("empty interrupted worktree still exists: %v", err)
+			}
+		})
+	}
+}
+
+func TestReconcilePreservesInterruptedCommit(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	result := testCommitFile(t, stringValue(task, "worktree_path"), "task.txt", "preserved\n", "fix: preserve interrupted result")
+	task["status"] = StatusRunning
+	delete(task, "process")
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := reconcile(store, false, true); code != 2 {
+		t.Fatalf("reconcile exit code = %d, want 2 for preserved recovery", code)
+	}
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := stringValue(current, "status"); status != StatusRecovery {
+		t.Fatalf("status = %s, want %s", status, StatusRecovery)
+	}
+	if got := stringValue(current, "result_commit"); got != result {
+		t.Fatalf("preserved result = %s, want %s", got, result)
+	}
+	if _, err := os.Stat(stringValue(task, "worktree_path")); err != nil {
+		t.Fatalf("interrupted worktree was not preserved: %v", err)
+	}
+}
+
 func TestRecoveryPreparationHonorsCheckoutLease(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)
