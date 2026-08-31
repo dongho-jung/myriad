@@ -537,7 +537,6 @@ func cleanupTaskReserved(store *Store, task Record) (bool, error) {
 		}
 		task["worktree_cleaned_at"] = now()
 		changed = true
-		exists = false
 	}
 	if err := os.RemoveAll(filepath.Join(store.Scratch, stringValue(task, "task_id"))); err != nil {
 		return false, err
