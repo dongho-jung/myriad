@@ -15,7 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func runValidationProcess(command []string, directory string, environment []string, timeout time.Duration, started func(Record)) (error, bool) {
+func runValidationProcess(command []string, directory string, environment []string, timeout time.Duration, started func(Record) error) (error, bool) {
 	executable, err := executablePath()
 	if err != nil {
 		return err, false
@@ -32,7 +32,11 @@ func runValidationProcess(command []string, directory string, environment []stri
 		return err, false
 	}
 	if started != nil {
-		started(processRecord(cmd.Process.Pid, "validation", cmd.Process.Pid))
+		if err := started(processRecord(cmd.Process.Pid, "validation", cmd.Process.Pid)); err != nil {
+			_ = unix.Kill(-cmd.Process.Pid, unix.SIGKILL)
+			_ = cmd.Wait()
+			return err, false
+		}
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -128,21 +132,28 @@ func candidateUnchanged(candidate, expectedHead string) (bool, string) {
 	return true, ""
 }
 
-func validateCandidate(store *Store, task Record, candidate, targetSHA, expectedHead string) bool {
+func saveValidationState(store *Store, task Record) error {
+	if store == nil {
+		return nil
+	}
+	return store.Save(task)
+}
+
+func validationFailed(store *Store, task Record, failure Record) (bool, error) {
+	task["validation_failure"] = failure
+	if err := saveValidationState(store, task); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+func validateCandidate(store *Store, task Record, candidate, targetSHA, expectedHead string) (bool, error) {
 	if unchanged, reason := candidateUnchanged(candidate, expectedHead); !unchanged {
-		task["validation_failure"] = Record{"reason": reason}
-		if store != nil {
-			_ = store.Save(task)
-		}
-		return false
+		return validationFailed(store, task, Record{"reason": reason})
 	}
 	commands, directories, err := validationCommands(task, candidate, targetSHA)
 	if err != nil {
-		task["validation_failure"] = Record{"reason": err.Error()}
-		if store != nil {
-			_ = store.Save(task)
-		}
-		return false
+		return validationFailed(store, task, Record{"reason": err.Error()})
 	}
 	candidateTask := cloneRecord(task)
 	candidateTask["worktree_path"] = candidate
@@ -164,53 +175,36 @@ func validateCandidate(store *Store, task Record, candidate, targetSHA, expected
 		waitErr, timedOut := runValidationProcess(
 			command, directories[index], taskEnvironment(candidateTask),
 			timeout,
-			func(owner Record) {
-				if owner != nil {
-					task["validation_process"] = owner
-					if store != nil {
-						_ = store.Save(task)
-					}
+			func(owner Record) error {
+				if owner == nil {
+					return fail("cannot record validation process identity")
 				}
+				task["validation_process"] = owner
+				return saveValidationState(store, task)
 			},
 		)
 		if waitErr != nil && exitCode(waitErr) == 127 && !timedOut {
-			task["validation_failure"] = Record{"command": stringsToAny(command), "reason": waitErr.Error()}
-			if store != nil {
-				_ = store.Save(task)
-			}
-			return false
+			return validationFailed(store, task, Record{"command": stringsToAny(command), "reason": waitErr.Error()})
 		}
 		delete(task, "validation_process")
-		if store != nil {
-			_ = store.Save(task)
+		if err := saveValidationState(store, task); err != nil {
+			return false, err
 		}
 		if unchanged, reason := candidateUnchanged(candidate, expectedHead); !unchanged {
-			task["validation_failure"] = Record{"command": stringsToAny(command), "exit_code": exitCode(waitErr), "reason": reason}
-			if store != nil {
-				_ = store.Save(task)
-			}
-			return false
+			return validationFailed(store, task, Record{"command": stringsToAny(command), "exit_code": exitCode(waitErr), "reason": reason})
 		}
 		if timedOut {
-			task["validation_failure"] = Record{"command": stringsToAny(command), "exit_code": 124, "reason": fmt.Sprintf("validation exceeded %g seconds", timeoutSeconds)}
-			if store != nil {
-				_ = store.Save(task)
-			}
-			return false
+			return validationFailed(store, task, Record{"command": stringsToAny(command), "exit_code": 124, "reason": fmt.Sprintf("validation exceeded %g seconds", timeoutSeconds)})
 		}
 		if waitErr != nil {
-			task["validation_failure"] = Record{"command": stringsToAny(command), "exit_code": exitCode(waitErr)}
-			if store != nil {
-				_ = store.Save(task)
-			}
-			return false
+			return validationFailed(store, task, Record{"command": stringsToAny(command), "exit_code": exitCode(waitErr)})
 		}
 	}
 	delete(task, "validation_failure")
-	if store != nil {
-		_ = store.Save(task)
+	if err := saveValidationState(store, task); err != nil {
+		return false, err
 	}
-	return true
+	return true, nil
 }
 
 func exitCode(err error) int {
@@ -514,7 +508,11 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 		return deferIntegration(store, task, StatusRecovery, "integration conflict; committed result preserved", true)
 	}
 	_ = setStatus(store, task, StatusValidating, "")
-	if !validateCandidate(store, task, candidate, targetSHA, candidateHead) {
+	valid, validationErr := validateCandidate(store, task, candidate, targetSHA, candidateHead)
+	if validationErr != nil {
+		return deferIntegration(store, task, StatusRecovery, "integration candidate state could not be recorded: "+validationErr.Error(), true)
+	}
+	if !valid {
 		return deferIntegration(store, task, StatusRecovery, "integration candidate failed validation", true)
 	}
 	if unchanged, reason := candidateUnchanged(candidate, candidateHead); !unchanged {
@@ -661,7 +659,11 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 		return nil, fail("publish candidate conflicts with the current target")
 	}
 	validationTask := cloneRecord(task)
-	if !validateCandidate(nil, validationTask, candidate, targetSHA, candidateHead) {
+	valid, validationErr := validateCandidate(nil, validationTask, candidate, targetSHA, candidateHead)
+	if validationErr != nil {
+		return nil, validationErr
+	}
+	if !valid {
 		return nil, fail("publish candidate failed validation: %s", describe(validationTask["validation_failure"]))
 	}
 	if unchanged, reason := candidateUnchanged(candidate, candidateHead); !unchanged {

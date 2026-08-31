@@ -406,6 +406,32 @@ func TestValidationDetectsQuotedTerraformPath(t *testing.T) {
 	}
 }
 
+func TestValidationStopsWhenStateCannotBeRecorded(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{Checks: []string{"true"}})
+	worktree := stringValue(task, "worktree_path")
+	head, err := gitRef(worktree, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := store.TaskPath(stringValue(task, "task_id"))
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	valid, err := validateCandidate(store, task, worktree, head, head)
+	if err == nil || valid {
+		t.Fatalf("validation continued without durable process state: (%t, %v)", valid, err)
+	}
+	if processAlive(task["validation_process"]) {
+		t.Fatal("validation process survived failed state recording")
+	}
+}
+
 func TestForbiddenMemoryInIntermediateCommitIsRejected(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)
