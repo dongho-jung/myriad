@@ -406,6 +406,8 @@ func recreateWorktree(store *Store, task Record) error {
 			}
 		}
 	}
+	delete(task, "worktree_cleaned_at")
+	task["worktree_recreated_at"] = now()
 	return store.Save(task)
 }
 

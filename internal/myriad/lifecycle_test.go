@@ -40,6 +40,40 @@ func TestRefreshCompletesEmptyPreProvisionRecovery(t *testing.T) {
 	}
 }
 
+func TestRecreateWorktreeClearsCleanedMarker(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	path := stringValue(task, "worktree_path")
+	if _, err := gitCommand(repository, true, "worktree", "unlock", path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitCommand(repository, true, "worktree", "remove", path); err != nil {
+		t.Fatal(err)
+	}
+	task["worktree_cleaned_at"] = now()
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := recreateWorktree(store, task); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(current, "worktree_cleaned_at") != "" {
+		t.Fatal("recreated worktree is still marked as cleaned")
+	}
+	if stringValue(current, "worktree_recreated_at") == "" {
+		t.Fatal("worktree recreation was not recorded")
+	}
+	if registered, err := worktreeRegistered(repository, path); err != nil || !registered {
+		t.Fatalf("recreated worktree registered = %t, error = %v", registered, err)
+	}
+}
+
 func TestReconcileCompletesEmptyInterruptedTasks(t *testing.T) {
 	for _, deferred := range []bool{false, true} {
 		name := "provisioned"
