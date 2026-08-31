@@ -432,6 +432,38 @@ func TestValidationStopsWhenStateCannotBeRecorded(t *testing.T) {
 	}
 }
 
+func TestIntegrationStopsBeforeTargetMutationOnStateFailure(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	result := testCommitFile(t, stringValue(task, "worktree_path"), "task.txt", "task\n", "fix: add task result")
+	targetBefore, err := gitRef(repository, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task["result_commit"] = result
+	task["status"] = StatusReady
+	delete(task, "process")
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := store.TaskPath(stringValue(task, "task_id"))
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	success, err := integrateTask(store, task)
+	if err == nil || success {
+		t.Fatalf("integration continued without durable state: (%t, %v)", success, err)
+	}
+	if targetAfter, _ := gitRef(repository, "refs/heads/main"); targetAfter != targetBefore {
+		t.Fatalf("target advanced despite state failure: %s -> %s", targetBefore, targetAfter)
+	}
+}
+
 func TestForbiddenMemoryInIntermediateCommitIsRejected(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)

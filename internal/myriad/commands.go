@@ -560,22 +560,22 @@ func inboxCommand(store *Store, sessionID, eventID string, asJSON bool) error {
 	return nil
 }
 
-func resolveObsoleteHandoff(store *Store, taskID string) bool {
+func resolveObsoleteHandoff(store *Store, taskID string) (bool, error) {
 	lock, err := store.Lock("task:"+taskID, false)
 	if err != nil {
-		return false
+		return false, err
 	}
 	defer func() { _ = lock.Unlock() }()
 	task, err := store.Load(taskID)
 	if err != nil {
-		return false
+		return false, err
 	}
 	if stringValue(task, "status") == StatusIntegrated {
 		resolveTaskNotices(store, taskID)
-		return true
+		return true, nil
 	}
 	if stringValue(task, "status") != StatusReady {
-		return false
+		return false, nil
 	}
 	return recognizeResultOnTarget(store, task)
 }
@@ -608,7 +608,11 @@ func handoffCommand(store *Store, eventID string) error {
 	if stringValue(message, "type") != "integration_ready" || taskID == "" {
 		return fail("inbox event cannot trigger a repository handoff: %s", eventID)
 	}
-	if resolveObsoleteHandoff(store, taskID) {
+	obsolete, err := resolveObsoleteHandoff(store, taskID)
+	if err != nil {
+		return err
+	}
+	if obsolete {
 		fmt.Printf("handoff no longer required: %s\ntask %s is already present on its target; this session remains open.\n", eventID, taskID)
 		return nil
 	}

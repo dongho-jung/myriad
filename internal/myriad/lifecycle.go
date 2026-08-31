@@ -462,22 +462,38 @@ func clearInterruptedIntegration(store *Store, task Record) error {
 	return store.Save(task)
 }
 
-func recognizeResultOnTarget(store *Store, task Record) bool {
+func recognizeResultOnTarget(store *Store, task Record) (bool, error) {
 	repository, target, result := stringValue(task, "repository"), stringValue(task, "target_branch"), stringValue(task, "result_commit")
-	if repository == "" || target == "" || result == "" || !branchExists(repository, target) {
-		return false
+	if repository == "" || target == "" || result == "" {
+		return false, nil
 	}
-	targetSHA, _ := gitRef(repository, "refs/heads/"+target)
-	if !isAncestor(repository, result, targetSHA) {
-		return false
+	targetSHA, exists, err := branchRef(repository, target)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	present, err := isAncestorChecked(repository, result, targetSHA)
+	if err != nil {
+		return false, err
+	}
+	if !present {
+		return false, nil
 	}
 	task["integrated_commit"] = targetSHA
 	delete(task, "unowned_integration_interrupted")
-	_ = setStatus(store, task, StatusIntegrated, "recorded result is already present on target")
+	if err := setStatus(store, task, StatusIntegrated, "recorded result is already present on target"); err != nil {
+		return true, err
+	}
 	resolveTaskNotices(store, stringValue(task, "task_id"))
-	_ = applyMemoryUpdate(store, task)
-	_, _ = cleanupTask(store, task, false, false)
-	return true
+	if err := applyMemoryUpdate(store, task); err != nil {
+		return true, err
+	}
+	if _, err := cleanupTask(store, task, false, false); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func integrateTaskCommand(store *Store, taskID string, quiet bool) (int, error) {
@@ -519,7 +535,10 @@ func integrateTaskCommand(store *Store, taskID string, quiet bool) (int, error) 
 		resolveTaskNotices(store, taskID)
 		success = true
 	} else if stringValue(task, "status") == StatusReady {
-		success = integrateTask(store, task)
+		success, err = integrateTask(store, task)
+		if err != nil {
+			return 2, err
+		}
 	}
 	if !quiet {
 		fmt.Printf("%s: %s\n", taskID, stringValue(task, "status"))
@@ -807,13 +826,15 @@ func recordOrphans(store *Store) {
 	}
 }
 
-func reconcileOne(store *Store, task Record, integrate bool) {
+func reconcileOne(store *Store, task Record, integrate bool) error {
 	if processAlive(task["process"]) || processAlive(task["integration_process"]) {
-		return
+		return nil
 	}
 	status := stringValue(task, "status")
 	if stringValue(task, "integration_candidate") != "" && status != StatusIntegrating && status != StatusValidating {
-		_ = clearInterruptedIntegration(store, task)
+		if err := clearInterruptedIntegration(store, task); err != nil {
+			return err
+		}
 	}
 	switch status {
 	case StatusRunning:
@@ -821,33 +842,50 @@ func reconcileOne(store *Store, task Record, integrate bool) {
 			delete(task, "process")
 			task["attachment_reconciled_at"] = now()
 			recordAgentExit(task, 0, false)
-			_ = store.Save(task)
-			_ = finalizeTask(store, task, integrate && boolValue(task, "auto_integrate", true), true)
+			if err := store.Save(task); err != nil {
+				return err
+			}
+			if err := finalizeTask(store, task, integrate && boolValue(task, "auto_integrate", true), true); err != nil {
+				return err
+			}
 		} else {
 			preserveInterruptedTask(store, task, "agent process ended before lifecycle completion; resume required")
 		}
 	case StatusCreated:
 		preserveInterruptedTask(store, task, "agent process ended before lifecycle completion; resume required")
 	case StatusIntegrating, StatusValidating:
-		_ = clearInterruptedIntegration(store, task)
-		if recognizeResultOnTarget(store, task) {
-			return
+		if err := clearInterruptedIntegration(store, task); err != nil {
+			return err
 		}
-		_ = setStatus(store, task, StatusReady, "interrupted integration reset and queued")
+		recognized, err := recognizeResultOnTarget(store, task)
+		if err != nil {
+			return err
+		}
+		if recognized {
+			return nil
+		}
+		if err := setStatus(store, task, StatusReady, "interrupted integration reset and queued"); err != nil {
+			return err
+		}
 		if integrate && boolValue(task, "auto_integrate", true) {
-			integrateTask(store, task)
+			_, err := integrateTask(store, task)
+			return err
 		}
 	case StatusReady:
 		if integrate && boolValue(task, "auto_integrate", true) {
-			integrateTask(store, task)
+			_, err := integrateTask(store, task)
+			return err
 		}
 	case StatusRecovery:
 		if stringValue(task, "result_commit") != "" {
-			recognizeResultOnTarget(store, task)
+			_, err := recognizeResultOnTarget(store, task)
+			return err
 		}
 	case StatusIntegrated, StatusCompleted, StatusFailed:
-		_, _ = cleanupTask(store, task, false, false)
+		_, err := cleanupTask(store, task, false, false)
+		return err
 	}
+	return nil
 }
 
 func reconcile(store *Store, integrate, quiet bool) int {
@@ -879,7 +917,12 @@ func reconcile(store *Store, integrate, quiet bool) int {
 						_ = store.Save(task)
 					}
 				}()
-				reconcileOne(store, task, integrate)
+				if reconcileErr := reconcileOne(store, task, integrate); reconcileErr != nil {
+					failed = true
+					task["reconcile_error"] = reconcileErr.Error()
+					_ = store.Save(task)
+					fmt.Fprintf(os.Stderr, "myriad: reconcile %s: %v\n", stringValue(task, "task_id"), reconcileErr)
+				}
 			}()
 			repositories[stringValue(task, "repository")] = struct{}{}
 		}

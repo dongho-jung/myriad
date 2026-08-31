@@ -262,7 +262,10 @@ func rebaseIntegrationResult(path, targetSHA, base string) (string, bool, error)
 		return "", false, err
 	}
 	if rebased.ExitCode != 0 {
-		conflicts, _ := gitCommand(path, false, "diff", "--name-only", "--diff-filter=U")
+		conflicts, conflictErr := gitCommand(path, true, "diff", "--name-only", "--diff-filter=U")
+		if conflictErr != nil {
+			return "", false, conflictErr
+		}
 		if strings.TrimSpace(conflicts.Stdout) != "" {
 			return "", true, nil
 		}
@@ -283,7 +286,11 @@ func createIntegrationCandidate(repository string, task Record, targetSHA, resul
 	if _, err := gitCommand(repository, true, "-c", "core.hooksPath=/dev/null", "worktree", "add", "--detach", candidate, resultCommit); err != nil {
 		return "", "", err
 	}
-	if isAncestor(repository, targetSHA, resultCommit) {
+	fastForward, err := isAncestorChecked(repository, targetSHA, resultCommit)
+	if err != nil {
+		return "", "", err
+	}
+	if fastForward {
 		return resultCommit, "fast-forward", nil
 	}
 	base := stringValue(task, "base_sha")
@@ -358,10 +365,12 @@ func advanceIntegrationTarget(repository, target, targetSHA, candidateHead, init
 	return ""
 }
 
-func deferIntegration(store *Store, task Record, status, reason string, repositoryReserved bool) bool {
-	_ = setStatus(store, task, status, reason)
-	_, _ = cleanupTask(store, task, repositoryReserved, false)
-	return false
+func deferIntegration(store *Store, task Record, status, reason string, repositoryReserved bool) (bool, error) {
+	if err := setStatus(store, task, status, reason); err != nil {
+		return false, err
+	}
+	_, err := cleanupTask(store, task, repositoryReserved, false)
+	return false, err
 }
 
 func queuedReason(store *Store, repository string, task Record, reason string) string {
@@ -371,7 +380,7 @@ func queuedReason(store *Store, repository string, task Record, reason string) s
 	return reason
 }
 
-func integrateTask(store *Store, task Record) bool {
+func integrateTask(store *Store, task Record) (bool, error) {
 	repository := stringValue(task, "repository")
 	target := stringValue(task, "target_branch")
 	resultCommit := stringValue(task, "result_commit")
@@ -387,20 +396,30 @@ func integrateTask(store *Store, task Record) bool {
 		return deferIntegration(store, task, StatusRecovery, err.Error(), false)
 	}
 	defer func() { _ = integrationLock.Unlock() }()
-	if branchExists(repository, target) {
-		targetSHA, err := gitRef(repository, "refs/heads/"+target)
-		if err != nil {
-			return deferIntegration(store, task, StatusRecovery, "cannot resolve target branch: "+err.Error(), false)
+	targetSHA, targetExists, err := branchRef(repository, target)
+	if err != nil {
+		return deferIntegration(store, task, StatusRecovery, "cannot inspect target branch: "+err.Error(), false)
+	}
+	if targetExists {
+		alreadyPresent, ancestryErr := isAncestorChecked(repository, resultCommit, targetSHA)
+		if ancestryErr != nil {
+			return deferIntegration(store, task, StatusRecovery, ancestryErr.Error(), false)
 		}
-		if isAncestor(repository, resultCommit, targetSHA) {
+		if alreadyPresent {
 			task["integrated_commit"] = targetSHA
 			task["integration_strategy"] = "already-present"
 			delete(task, "integration_redundant_result")
-			_ = setStatus(store, task, StatusIntegrated, "")
+			if err := setStatus(store, task, StatusIntegrated, ""); err != nil {
+				return true, err
+			}
 			resolveTaskNotices(store, stringValue(task, "task_id"))
-			_ = applyMemoryUpdate(store, task)
-			_, _ = cleanupTask(store, task, false, false)
-			return true
+			if err := applyMemoryUpdate(store, task); err != nil {
+				return true, err
+			}
+			if _, err := cleanupTask(store, task, false, false); err != nil {
+				return true, err
+			}
+			return true, nil
 		}
 	}
 	activity, err := store.RepositoryActivityLock(repository, true, false)
@@ -411,7 +430,10 @@ func integrateTask(store *Store, task Record) bool {
 		return deferIntegration(store, task, StatusRecovery, err.Error(), false)
 	}
 	defer func() { _ = activity.Unlock() }()
-	key, _ := repoKey(repository)
+	key, err := repoKey(repository)
+	if err != nil {
+		return deferIntegration(store, task, StatusRecovery, err.Error(), true)
+	}
 	candidate := filepath.Join(store.Integrations, key, stringValue(task, "task_id"))
 	if !removeIntegrationWorktree(repository, candidate) {
 		return deferIntegration(store, task, StatusRecovery, "stale integration worktree could not be removed: "+candidate, true)
@@ -427,7 +449,10 @@ func integrateTask(store *Store, task Record) bool {
 			for _, held := range checkoutLocks {
 				_ = held.Unlock()
 			}
-			return deferIntegration(store, task, StatusReady, queuedReason(store, repository, task, "checkout has an active agent; integration queued: "+path), true)
+			if isLockBusy(lockErr) {
+				return deferIntegration(store, task, StatusReady, queuedReason(store, repository, task, "checkout has an active agent; integration queued: "+path), true)
+			}
+			return deferIntegration(store, task, StatusRecovery, lockErr.Error(), true)
 		}
 		checkoutLocks = append(checkoutLocks, lock)
 	}
@@ -439,13 +464,20 @@ func integrateTask(store *Store, task Record) bool {
 	return integrateTaskReserved(store, task, repository, target, resultCommit, candidate)
 }
 
-func integrateTaskReserved(store *Store, task Record, repository, target, resultCommit, candidate string) bool {
+func integrateTaskReserved(store *Store, task Record, repository, target, resultCommit, candidate string) (success bool, resultErr error) {
 	targetSHA, err := gitRef(repository, "refs/heads/"+target)
 	if err != nil {
 		return deferIntegration(store, task, StatusRecovery, "cannot resolve target branch "+target+": "+err.Error(), true)
 	}
 	base := stringValue(task, "base_sha")
-	if base == "" || !isAncestor(repository, base, resultCommit) {
+	if base == "" {
+		return deferIntegration(store, task, StatusRecovery, "result does not descend from the recorded base", true)
+	}
+	resultDescends, ancestryErr := isAncestorChecked(repository, base, resultCommit)
+	if ancestryErr != nil {
+		return deferIntegration(store, task, StatusRecovery, ancestryErr.Error(), true)
+	}
+	if !resultDescends {
 		return deferIntegration(store, task, StatusRecovery, "result does not descend from the recorded base", true)
 	}
 	findings, err := forbiddenHistory(repository, resultCommit, targetSHA)
@@ -454,18 +486,31 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 	}
 	if len(findings) > 0 {
 		task["forbidden_history"] = recordsToAny(findings)
-		_ = store.Save(task)
 		return deferIntegration(store, task, StatusRecovery, "result history tracks forbidden paths: "+strings.Join(findingPaths(findings), ", "), true)
 	}
-	if isAncestor(repository, resultCommit, targetSHA) {
-		task["integrated_commit"] = targetSHA
-		_ = setStatus(store, task, StatusIntegrated, "result was already present on target")
-		resolveTaskNotices(store, stringValue(task, "task_id"))
-		_ = applyMemoryUpdate(store, task)
-		_, _ = cleanupTask(store, task, true, false)
-		return true
+	alreadyPresent, ancestryErr := isAncestorChecked(repository, resultCommit, targetSHA)
+	if ancestryErr != nil {
+		return deferIntegration(store, task, StatusRecovery, ancestryErr.Error(), true)
 	}
-	if !isAncestor(repository, base, targetSHA) {
+	if alreadyPresent {
+		task["integrated_commit"] = targetSHA
+		if err := setStatus(store, task, StatusIntegrated, "result was already present on target"); err != nil {
+			return true, err
+		}
+		resolveTaskNotices(store, stringValue(task, "task_id"))
+		if err := applyMemoryUpdate(store, task); err != nil {
+			return true, err
+		}
+		if _, err := cleanupTask(store, task, true, false); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+	targetDescends, ancestryErr := isAncestorChecked(repository, base, targetSHA)
+	if ancestryErr != nil {
+		return deferIntegration(store, task, StatusRecovery, ancestryErr.Error(), true)
+	}
+	if !targetDescends {
 		return deferIntegration(store, task, StatusRecovery, "target no longer descends from the task base; automatic integration refused", true)
 	}
 	checkout, err := targetCheckout(repository, target)
@@ -487,7 +532,9 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 	}
 	task["integration_process"] = owner
 	task["integration_candidate"] = candidate
-	_ = setStatus(store, task, StatusIntegrating, "")
+	if err := setStatus(store, task, StatusIntegrating, ""); err != nil {
+		return false, err
+	}
 	defer func() {
 		terminateOwnedProcess(task["validation_process"])
 		if removeIntegrationWorktree(repository, candidate) {
@@ -498,7 +545,9 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 		delete(task, "validation_process")
 		delete(task, "integration_process")
 		delete(task, "integration_candidate")
-		_ = store.Save(task)
+		if err := store.Save(task); err != nil && resultErr == nil {
+			resultErr = err
+		}
 	}()
 	candidateHead, strategy, err := createIntegrationCandidate(repository, task, targetSHA, resultCommit, candidate)
 	if err != nil {
@@ -507,7 +556,9 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 	if candidateHead == "" {
 		return deferIntegration(store, task, StatusRecovery, "integration conflict; committed result preserved", true)
 	}
-	_ = setStatus(store, task, StatusValidating, "")
+	if err := setStatus(store, task, StatusValidating, ""); err != nil {
+		return false, err
+	}
 	valid, validationErr := validateCandidate(store, task, candidate, targetSHA, candidateHead)
 	if validationErr != nil {
 		return deferIntegration(store, task, StatusRecovery, "integration candidate state could not be recorded: "+validationErr.Error(), true)
@@ -517,7 +568,6 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 	}
 	if unchanged, reason := candidateUnchanged(candidate, candidateHead); !unchanged {
 		task["validation_failure"] = Record{"reason": reason}
-		_ = store.Save(task)
 		return deferIntegration(store, task, StatusRecovery, "integration candidate changed after validation", true)
 	}
 	differs, err := treesDiffer(repository, targetSHA, candidateHead)
@@ -528,9 +578,13 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 		task["integrated_commit"] = targetSHA
 		task["integration_strategy"] = "redundant"
 		task["integration_redundant_result"] = resultCommit
-		_ = setStatus(store, task, StatusIntegrated, "result changes were already present on target")
+		if err := setStatus(store, task, StatusIntegrated, "result changes were already present on target"); err != nil {
+			return false, err
+		}
 		resolveTaskNotices(store, stringValue(task, "task_id"))
-		_ = applyMemoryUpdate(store, task)
+		if err := applyMemoryUpdate(store, task); err != nil {
+			return true, err
+		}
 	} else {
 		if reason := advanceIntegrationTarget(repository, target, targetSHA, candidateHead, checkout); reason != "" {
 			return deferIntegration(store, task, StatusReady, reason+"; integration queued", true)
@@ -538,12 +592,18 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 		task["integrated_commit"] = candidateHead
 		task["integration_strategy"] = strategy
 		delete(task, "integration_redundant_result")
-		_ = setStatus(store, task, StatusIntegrated, "")
+		if err := setStatus(store, task, StatusIntegrated, ""); err != nil {
+			return true, err
+		}
 		resolveTaskNotices(store, stringValue(task, "task_id"))
-		_ = applyMemoryUpdate(store, task)
+		if err := applyMemoryUpdate(store, task); err != nil {
+			return true, err
+		}
 	}
-	_, _ = cleanupTask(store, task, true, false)
-	return stringValue(task, "integrated_commit") != ""
+	if _, err := cleanupTask(store, task, true, false); err != nil {
+		return true, err
+	}
+	return stringValue(task, "integrated_commit") != "", nil
 }
 
 func finalizeTask(store *Store, task Record, integrate, trustCleanCommit bool) error {
@@ -558,7 +618,8 @@ func finalizeTask(store *Store, task Record, integrate, trustCleanCommit bool) e
 		return err
 	}
 	if integrate && boolValue(task, "auto_integrate", true) && cleaned {
-		integrateTask(store, task)
+		_, err := integrateTask(store, task)
+		return err
 	}
 	return nil
 }
@@ -578,7 +639,10 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if len(changes.Normal) > 0 {
 		return nil, fail("publish requires a clean committed worktree: %v", changes.Normal[:min(20, len(changes.Normal))])
 	}
-	branch, _ := gitCommand(path, true, "branch", "--show-current")
+	branch, err := gitCommand(path, true, "branch", "--show-current")
+	if err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(branch.Stdout) != stringValue(task, "branch") {
 		return nil, fail("unexpected task branch: %s", strings.TrimSpace(branch.Stdout))
 	}
@@ -588,14 +652,31 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	}
 	base := stringValue(task, "base_sha")
 	repository := stringValue(task, "repository")
-	if base == "" || !isAncestor(repository, base, resultCommit) {
+	if base == "" {
+		return nil, fail("publish result does not descend from the recorded task base")
+	}
+	resultDescends, err := isAncestorChecked(repository, base, resultCommit)
+	if err != nil {
+		return nil, err
+	}
+	if !resultDescends {
 		return nil, fail("publish result does not descend from the recorded task base")
 	}
 	target := stringValue(task, "target_branch")
-	if target == "" || !branchExists(repository, target) {
+	if target == "" {
 		return nil, fail("publish target branch is unavailable: %s", firstNonempty(target, "(missing)"))
 	}
-	key, _ := repoKey(repository)
+	_, targetExists, err := branchRef(repository, target)
+	if err != nil {
+		return nil, err
+	}
+	if !targetExists {
+		return nil, fail("publish target branch is unavailable: %s", target)
+	}
+	key, err := repoKey(repository)
+	if err != nil {
+		return nil, err
+	}
 	candidate := filepath.Join(store.Integrations, key, stringValue(task, "task_id")+"-publish")
 	defer removeIntegrationWorktree(repository, candidate)
 	publishLock, err := store.Lock("publish:"+stringValue(task, "task_id"), false)
@@ -617,10 +698,18 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !isAncestor(repository, base, targetSHA) {
+	targetDescends, err := isAncestorChecked(repository, base, targetSHA)
+	if err != nil {
+		return nil, err
+	}
+	if !targetDescends {
 		return nil, fail("target no longer descends from the recorded task base")
 	}
-	if isAncestor(repository, resultCommit, targetSHA) {
+	alreadyPresent, err := isAncestorChecked(repository, resultCommit, targetSHA)
+	if err != nil {
+		return nil, err
+	}
+	if alreadyPresent {
 		return Record{"result_commit": resultCommit, "published_commit": targetSHA, "strategy": "already-present"}, nil
 	}
 	findings, err := forbiddenHistory(repository, resultCommit, targetSHA)
@@ -655,7 +744,10 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 		}
 	}
 	candidateHead, strategy, err := createIntegrationCandidate(repository, task, targetSHA, resultCommit, candidate)
-	if err != nil || candidateHead == "" {
+	if err != nil {
+		return nil, err
+	}
+	if candidateHead == "" {
 		return nil, fail("publish candidate conflicts with the current target")
 	}
 	validationTask := cloneRecord(task)
