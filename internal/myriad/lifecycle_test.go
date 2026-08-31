@@ -7,6 +7,37 @@ import (
 	"testing"
 )
 
+func TestRefreshCompletesEmptyPreProvisionRecovery(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task, err := createTask(store, createTaskOptions{
+		Agent:       "codex",
+		Deferred:    true,
+		Description: "",
+		LaunchCWD:   repository,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordAgentExit(task, 1, false)
+	delete(task, "process")
+	if err := setStatus(store, task, StatusRecovery, "agent exited before worktree provisioning"); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshInterruptedTasks(store, repository)
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status := stringValue(current, "status"); status != StatusCompleted {
+		t.Fatalf("status = %s, reason = %s", status, stringValue(current, "status_reason"))
+	}
+	if _, err := os.Stat(stringValue(task, "worktree_path")); !os.IsNotExist(err) {
+		t.Fatalf("empty reserved worktree still exists: %v", err)
+	}
+}
+
 func TestTaskIntegratesFastForwardAndCleansUp(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)

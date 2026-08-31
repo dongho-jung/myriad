@@ -45,7 +45,6 @@ const (
 	worktreeCreating = "creating"
 	worktreeReady    = "ready"
 
-	codexPendingThreadName = "\u200b"
 	codexSlugModel         = "gpt-5.6-luna"
 	codexSlugLimit         = 48
 	codexSlugPreviewLimit  = 4000

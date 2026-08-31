@@ -49,9 +49,8 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 	}
 
 	var control *codexServer
-	pendingThreadID := ""
 	if controlSocket != "" {
-		server, transformed, pending, startErr := startCodexAppServer(
+		server, transformed, startErr := startCodexAppServer(
 			store, command, controlSocket,
 			[]string{currentDirectory(), workingDirectory}, os.Environ(),
 		)
@@ -61,12 +60,7 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 		} else if server != nil {
 			control = server
 			command = transformed
-			pendingThreadID = pending
 			updates := Record{"control_status": "ready", "control_started_at": now()}
-			if pending != "" {
-				updates["pending_codex_thread_id"] = pending
-				updates["pending_codex_thread_created_at"] = now()
-			}
 			_ = updateSessionMetadata(sessionPath, sessionID, updates)
 		}
 	}
@@ -104,7 +98,6 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 	descendantTerminateAt := time.Time{}
 	controlTerminateAt := time.Time{}
 	controlKilled := false
-	pendingCleanupDone := pendingThreadID == ""
 	codexTitleFinalized := control == nil
 	notificationClosed := false
 
@@ -177,37 +170,8 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 			}
 		}
 
-		if mainDone && control != nil && !controlDone && pendingThreadID != "" && !pendingCleanupDone {
-			cleanupID := pendingThreadID
-			if sessionPath != "" {
-				var current Record
-				if readJSON(sessionPath, maxJSONBytes, &current) == nil {
-					if value, exists := current["pending_codex_thread_id"]; exists {
-						cleanupID, _ = value.(string)
-					}
-				}
-			}
-			if cleanupID != "" {
-				deleted, cleanupErr := deleteEmptyPendingCodexThread(controlSocket, cleanupID)
-				updates := Record{"pending_codex_thread_cleanup_at": now()}
-				if cleanupErr != nil {
-					updates["pending_codex_thread_cleanup"] = "failed"
-					updates["pending_codex_thread_cleanup_error"] = cleanupErr.Error()
-				} else if deleted {
-					updates["pending_codex_thread_cleanup"] = "deleted"
-					updates["pending_codex_thread_id"] = nil
-				} else {
-					updates["pending_codex_thread_cleanup"] = "retained"
-				}
-				if sessionPath != "" {
-					_ = updateSessionMetadata(sessionPath, sessionID, updates)
-				}
-			}
-			pendingCleanupDone = true
-		}
-
-		if mainDone && control != nil && !controlDone && pendingCleanupDone && !codexTitleFinalized {
-			if err := finalizeCodexThreadName(store, sessionPath, sessionID, controlSocket, workingDirectory, pendingThreadID == ""); err != nil {
+		if mainDone && control != nil && !controlDone && !codexTitleFinalized {
+			if err := finalizeCodexThreadName(store, sessionPath, sessionID, controlSocket, workingDirectory, true); err != nil {
 				fmt.Fprintf(os.Stderr, "myriad: Codex final title unavailable: %v\n", err)
 				if sessionPath != "" {
 					_ = updateSessionMetadata(sessionPath, sessionID, Record{

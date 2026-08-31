@@ -298,7 +298,14 @@ func stripManagedCodexTUIConfigs(command []string, executable int) []string {
 	return result
 }
 
-func codexRemoteCommand(command []string, socketPath string, trustedDirectories []string) []string {
+func codexRemoteStatusLine(command []string, provisionHook bool) string {
+	if provisionHook && freshInteractiveCodexCommand(command) {
+		return codexDirectStatusLine
+	}
+	return codexManagedStatusLine
+}
+
+func codexRemoteCommand(command []string, socketPath string, trustedDirectories []string, statusLine string) []string {
 	executable := commandExecutableIndex(command, "codex")
 	subcommand := codexSubcommand(command)
 	if executable < 0 || (subcommand != "" && subcommand != "resume" && subcommand != "fork") {
@@ -314,7 +321,7 @@ func codexRemoteCommand(command []string, socketPath string, trustedDirectories 
 		"--remote", "unix://" + socketPath,
 		"-c", codexTrustedProjectsConfig(trustedDirectories),
 		"-c", "tui.show_tooltips=false",
-		"-c", codexManagedStatusLine,
+		"-c", statusLine,
 	}
 	return append(result[:executable+1], append(addition, result[executable+1:]...)...)
 }
@@ -634,7 +641,7 @@ func latestCodexThreadID(socketPath, workingDirectory string) (string, error) {
 	exact, _ := canonical(workingDirectory)
 	result, err := rpc.request(2, "thread/list", Record{
 		"cwd": exact, "limit": 1, "sortKey": "recency_at",
-		"sortDirection": "desc", "useStateDbOnly": true,
+		"sortDirection": "desc",
 	})
 	if err != nil {
 		return "", err
@@ -646,33 +653,6 @@ func latestCodexThreadID(socketPath, workingDirectory string) (string, error) {
 		}
 	}
 	return "", nil
-}
-
-func startNamedCodexThread(socketPath, workingDirectory, name string) (string, string, error) {
-	rpc, err := dialCodex(socketPath)
-	if err != nil {
-		return "", "", err
-	}
-	defer rpc.close()
-	if err := rpc.initialize("Myriad pending title bootstrap"); err != nil {
-		return "", "", err
-	}
-	cwd, _ := canonical(workingDirectory)
-	result, err := rpc.request(2, "thread/start", Record{"cwd": cwd})
-	if err != nil {
-		return "", "", err
-	}
-	started := anyRecord(result)
-	threadID := stringValue(anyRecord(started["thread"]), "id")
-	if threadID == "" {
-		return "", "", fail("Codex pending-title thread did not start")
-	}
-	effort, _ := started["reasoningEffort"].(string)
-	if _, err := rpc.request(3, "thread/name/set", Record{"threadId": threadID, "name": name}); err != nil {
-		_, _ = rpc.request(4, "thread/delete", Record{"threadId": threadID})
-		return "", "", err
-	}
-	return threadID, effort, nil
 }
 
 func resumeCodexThreadEffort(socketPath, threadID string) (string, error) {
@@ -692,69 +672,62 @@ func resumeCodexThreadEffort(socketPath, threadID string) (string, error) {
 	return effort, nil
 }
 
-func deleteEmptyPendingCodexThread(socketPath, threadID string) (bool, error) {
-	rpc, err := dialCodex(socketPath)
-	if err != nil {
-		return false, err
-	}
-	defer rpc.close()
-	if err := rpc.initialize("Myriad pending thread cleanup"); err != nil {
-		return false, err
-	}
-	result, err := rpc.request(2, "thread/read", Record{"threadId": threadID, "includeTurns": true})
-	if err != nil {
-		return false, err
-	}
-	thread := anyRecord(anyRecord(result)["thread"])
-	turns, ok := thread["turns"].([]any)
-	if stringValue(thread, "id") != threadID || !ok || len(turns) != 0 {
-		return false, nil
-	}
-	_, err = rpc.request(3, "thread/delete", Record{"threadId": threadID})
-	return err == nil, err
+func codexRolloutUnavailable(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "no rollout found for thread id")
 }
 
-func startCodexAppServer(store *Store, command []string, socketPath string, trustedDirectories []string, environment []string) (*codexServer, []string, string, error) {
+func resumableCodexThread(socketPath, workingDirectory string) (string, string, error) {
+	threadID, err := latestCodexThreadID(socketPath, workingDirectory)
+	if err != nil || threadID == "" {
+		return threadID, "", err
+	}
+	effort, err := resumeCodexThreadEffort(socketPath, threadID)
+	if codexRolloutUnavailable(err) {
+		return "", "", nil
+	}
+	return threadID, effort, err
+}
+
+func startCodexAppServer(store *Store, command []string, socketPath string, trustedDirectories []string, environment []string) (*codexServer, []string, error) {
 	agentCommand, recoveryDirectory, err := unmarkCodexRecoveryCommand(command)
 	if err != nil {
-		return nil, nil, "", err
-	}
-	remoteCommand := codexRemoteCommand(agentCommand, socketPath, trustedDirectories)
-	if remoteCommand == nil {
-		return nil, command, "", nil
+		return nil, nil, err
 	}
 	provisionHook := os.Getenv("MYRIAD_HARNESS") == "myriad" && os.Getenv("MYRIAD_TASK_ID") != "" && os.Getenv("MYRIAD_BRANCH") == ""
+	remoteCommand := codexRemoteCommand(agentCommand, socketPath, trustedDirectories, codexRemoteStatusLine(agentCommand, provisionHook))
+	if remoteCommand == nil {
+		return nil, command, nil
+	}
 	hookLauncher := ""
 	if provisionHook {
 		hookLauncher, err = materializeCodexHookRuntime(store)
 		if err != nil {
-			return nil, nil, "", err
+			return nil, nil, err
 		}
 	}
 	serverCommand, err := codexAppServerCommand(agentCommand, socketPath, provisionHook, hookLauncher)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, err
 	}
 	_ = os.Remove(socketPath)
 	server, err := spawnCodexServer(serverCommand, environment)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, err
 	}
 	if err := waitForCodexServer(server, socketPath); err != nil {
 		stopCodexServer(server, true)
-		return nil, nil, "", err
+		return nil, nil, err
 	}
-	pendingThreadID := ""
 	if recoveryDirectory != "" {
-		threadID, err := latestCodexThreadID(socketPath, recoveryDirectory)
+		threadID, effort, err := resumableCodexThread(socketPath, recoveryDirectory)
 		if err != nil {
 			stopCodexServer(server, true)
-			return nil, nil, "", err
+			return nil, nil, err
 		}
 		remoteCommand, err = resolveCodexRecoveryCommand(remoteCommand, threadID)
 		if err != nil {
 			stopCodexServer(server, true)
-			return nil, nil, "", err
+			return nil, nil, err
 		}
 		if threadID == "" {
 			title := os.Getenv("MYRIAD_TASK_TITLE")
@@ -763,30 +736,14 @@ func startCodexAppServer(store *Store, command []string, socketPath string, trus
 			}
 			fmt.Fprintf(os.Stderr, "myriad: no saved Codex chat matched %q; starting a new chat with its preserved checkout\n", title)
 		} else {
-			effort, err := resumeCodexThreadEffort(socketPath, threadID)
-			if err != nil {
-				stopCodexServer(server, true)
-				return nil, nil, "", err
-			}
 			remoteCommand, err = codexWithReasoningEffort(remoteCommand, effort)
 			if err != nil {
 				stopCodexServer(server, true)
-				return nil, nil, "", err
-			}
-		}
-	} else if provisionHook && freshInteractiveCodexCommand(agentCommand) {
-		threadID, effort, titleErr := startNamedCodexThread(socketPath, currentDirectory(), codexPendingThreadName)
-		if titleErr != nil {
-			fmt.Fprintf(os.Stderr, "myriad: Codex pending title unavailable: %v\n", titleErr)
-		} else {
-			pendingThreadID = threadID
-			remoteCommand, err = codexWithReasoningEffort(remoteCommand, effort)
-			if err == nil {
-				remoteCommand = append(remoteCommand, "resume", threadID)
+				return nil, nil, err
 			}
 		}
 	}
-	return server, remoteCommand, pendingThreadID, nil
+	return server, remoteCommand, nil
 }
 
 func currentDirectory() string {

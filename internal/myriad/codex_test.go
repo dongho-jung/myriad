@@ -1,13 +1,67 @@
 package myriad
 
 import (
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/gorilla/websocket"
 )
+
+func testCodexRecoveryServer(t *testing.T, socketPath, cwd string, missingRollout bool) <-chan Record {
+	t.Helper()
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listParams := make(chan Record, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, upgradeErr := upgrader.Upgrade(writer, request, nil)
+		if upgradeErr != nil {
+			return
+		}
+		defer connection.Close()
+		for {
+			message := Record{}
+			if readErr := connection.ReadJSON(&message); readErr != nil {
+				return
+			}
+			requestID, hasID := intValue(message["id"])
+			switch stringValue(message, "method") {
+			case "initialize":
+				if hasID {
+					_ = connection.WriteJSON(Record{"id": requestID, "result": Record{}})
+				}
+			case "thread/list":
+				listParams <- anyRecord(message["params"])
+				_ = connection.WriteJSON(Record{"id": requestID, "result": Record{
+					"data": []any{Record{"id": "thread-one", "cwd": cwd}},
+				}})
+			case "thread/resume":
+				if missingRollout {
+					_ = connection.WriteJSON(Record{"id": requestID, "error": Record{
+						"code": -32600, "message": "no rollout found for thread id thread-one",
+					}})
+				} else {
+					_ = connection.WriteJSON(Record{"id": requestID, "result": Record{"reasoningEffort": "high"}})
+				}
+			}
+		}
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	})
+	return listParams
+}
 
 func TestDirectCLIReportsExecutableStartFailure(t *testing.T) {
 	code, err := directCLI([]string{filepath.Join(t.TempDir(), "missing")}, t.TempDir(), os.Environ())
@@ -61,6 +115,37 @@ func TestCodexAppServerUnixTransport(t *testing.T) {
 	}
 }
 
+func TestFreshManagedCodexAppServerDoesNotResumeEmptyThread(t *testing.T) {
+	if _, err := exec.LookPath("codex"); err != nil {
+		t.Skip("codex is not installed")
+	}
+	t.Setenv("MYRIAD_HARNESS", "myriad")
+	t.Setenv("MYRIAD_TASK_ID", "fresh-codex-test")
+	t.Setenv("MYRIAD_BRANCH", "")
+	store := testStore(t)
+	socketPath := filepath.Join(t.TempDir(), "codex.sock")
+	server, command, err := startCodexAppServer(
+		store,
+		[]string{"codex", "--dangerously-bypass-approvals-and-sandbox"},
+		socketPath,
+		[]string{t.TempDir()},
+		os.Environ(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if server == nil {
+		t.Fatal("fresh Codex launch did not start its App Server")
+	}
+	defer stopCodexServer(server, true)
+	if codexSubcommand(command) != "" {
+		t.Fatalf("fresh managed launch unexpectedly resumes an empty thread: %#v", command)
+	}
+	if strings.Contains(strings.Join(command, "\n"), "thread-title") {
+		t.Fatalf("fresh managed launch exposes an unset thread title: %#v", command)
+	}
+}
+
 func TestCodexProvisionServerUsesPinnedHookBypass(t *testing.T) {
 	command, err := codexAppServerCommand(
 		[]string{"codex", "--dangerously-bypass-approvals-and-sandbox"},
@@ -107,7 +192,7 @@ func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
 			"-c", codexDirectStatusLine,
 			"--dangerously-bypass-approvals-and-sandbox",
 		},
-		"/tmp/control.sock", []string{"/project"},
+		"/tmp/control.sock", []string{"/project"}, codexManagedStatusLine,
 	)
 	joined := strings.Join(command, "\n")
 	if strings.Contains(joined, "tui.show_tooltips=true") {
@@ -123,6 +208,54 @@ func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
 	}
 	if !strings.HasPrefix(codexManagedStatusLine, `tui.status_line=["thread-title","pull-request-number",`) {
 		t.Fatalf("managed status line does not place Codex's linked PR item after its context title: %s", codexManagedStatusLine)
+	}
+}
+
+func TestFreshManagedCodexStartsWithoutThreadTitle(t *testing.T) {
+	fresh := []string{"codex", "--dangerously-bypass-approvals-and-sandbox"}
+	if got := codexRemoteStatusLine(fresh, true); got != codexDirectStatusLine {
+		t.Fatalf("fresh managed status line = %q, want %q", got, codexDirectStatusLine)
+	}
+	command := codexRemoteCommand(fresh, "/tmp/control.sock", []string{"/project"}, codexRemoteStatusLine(fresh, true))
+	if strings.Contains(strings.Join(command, "\n"), "thread-title") {
+		t.Fatalf("fresh managed command exposes an empty thread title: %#v", command)
+	}
+	if codexSubcommand(command) != "" {
+		t.Fatalf("fresh managed command unexpectedly resumes a thread: %#v", command)
+	}
+
+	resume := []string{"codex", "resume", "thread-id"}
+	if got := codexRemoteStatusLine(resume, true); got != codexManagedStatusLine {
+		t.Fatalf("resume status line = %q, want %q", got, codexManagedStatusLine)
+	}
+}
+
+func TestCodexRecoveryFallsBackFromMissingRollout(t *testing.T) {
+	cwd := t.TempDir()
+	socketPath := filepath.Join(t.TempDir(), "codex.sock")
+	listParams := testCodexRecoveryServer(t, socketPath, cwd, true)
+	threadID, effort, err := resumableCodexThread(socketPath, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if threadID != "" || effort != "" {
+		t.Fatalf("unusable thread = (%q, %q), want a fresh-chat fallback", threadID, effort)
+	}
+	if params := <-listParams; params["useStateDbOnly"] != nil {
+		t.Fatalf("recovery skipped Codex scan-and-repair: %#v", params)
+	}
+}
+
+func TestCodexRecoveryKeepsStoredReasoningEffort(t *testing.T) {
+	cwd := t.TempDir()
+	socketPath := filepath.Join(t.TempDir(), "codex.sock")
+	testCodexRecoveryServer(t, socketPath, cwd, false)
+	threadID, effort, err := resumableCodexThread(socketPath, cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if threadID != "thread-one" || effort != "high" {
+		t.Fatalf("resumable thread = (%q, %q), want (thread-one, high)", threadID, effort)
 	}
 }
 

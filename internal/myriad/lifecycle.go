@@ -158,7 +158,8 @@ func refreshInterruptedTasks(store *Store, repository string) []Record {
 			continue
 		}
 		status := stringValue(snapshot, "status")
-		if status != StatusCreated && status != StatusRunning && !(status == StatusRecovery && stringValue(snapshot, "interrupted_at") != "") {
+		interruptedRecovery := status == StatusRecovery && (stringValue(snapshot, "interrupted_at") != "" || !taskWorktreeReady(snapshot))
+		if status != StatusCreated && status != StatusRunning && !interruptedRecovery {
 			continue
 		}
 		if processAlive(snapshot["process"]) {
