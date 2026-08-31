@@ -74,6 +74,21 @@ func commandExecutableIndex(command []string, executable string) int {
 				index++
 				continue
 			}
+			switch value {
+			case "-i", "--ignore-environment", "-0", "--null", "--debug":
+				index++
+				continue
+			case "-u", "--unset", "-C", "--chdir":
+				if index+1 >= len(command) {
+					return -1
+				}
+				index += 2
+				continue
+			}
+			if strings.HasPrefix(value, "--unset=") || strings.HasPrefix(value, "--chdir=") {
+				index++
+				continue
+			}
 			break
 		}
 	}
@@ -252,6 +267,9 @@ func managedAgentCommand(task Record, command []string) []string {
 	worktree, _ := canonical(stringValue(task, "worktree_path"))
 	for index := executable + 1; index < len(result); index++ {
 		value := result[index]
+		if value == "--" {
+			break
+		}
 		if value == "--add-dir" && index+1 < len(result) {
 			candidate, _ := canonical(result[index+1])
 			if candidate == worktree {
@@ -294,6 +312,10 @@ func stripManagedCodexTUIConfigs(command []string, executable int) []string {
 	arguments := command[executable+1:]
 	for index := 0; index < len(arguments); {
 		value := arguments[index]
+		if value == "--" {
+			result = append(result, arguments[index:]...)
+			break
+		}
 		if (value == "-c" || value == "--config") && index+1 < len(arguments) {
 			key, _, _ := strings.Cut(arguments[index+1], "=")
 			if managed[strings.TrimSpace(key)] {

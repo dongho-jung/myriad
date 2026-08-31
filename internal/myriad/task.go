@@ -216,8 +216,10 @@ func pullRequestNumber(value string) (int, error) {
 		return parsed, nil
 	}
 	if match := prTextPattern.FindStringSubmatch(value); len(match) > 1 {
-		parsed, _ := strconv.Atoi(match[1])
-		return parsed, nil
+		parsed, err := strconv.Atoi(match[1])
+		if err == nil && parsed > 0 {
+			return parsed, nil
+		}
 	}
 	return 0, fail("invalid pull request number: %q", value)
 }

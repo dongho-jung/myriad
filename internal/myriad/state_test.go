@@ -246,6 +246,12 @@ func TestFallbackTaskSlugUsesCompleteWords(t *testing.T) {
 	}
 }
 
+func TestPullRequestNumberRejectsOverflow(t *testing.T) {
+	if _, err := pullRequestNumber("PR #" + strings.Repeat("9", 100)); err == nil {
+		t.Fatal("overflowing pull request number was accepted")
+	}
+}
+
 func TestOverlayEnvironmentReplacesValues(t *testing.T) {
 	got := overlayEnvironment([]string{"A=old", "B=kept", "A=duplicate"}, map[string]string{"A": "new"})
 	want := []string{"B=kept", "A=new"}

@@ -367,6 +367,27 @@ func TestManagedTaskRejectsExternalCodexAppServer(t *testing.T) {
 	if codexUsesRemoteAppServer([]string{"codex", "--", "--remote"}) {
 		t.Fatal("prompt text after -- was mistaken for a remote App Server option")
 	}
+	wrapped := []string{"env", "-u", "CODEX_TOKEN", "codex", "--remote", "unix:///tmp/codex.sock"}
+	if err := validateForegroundAgentCommand("codex", wrapped, true); err == nil {
+		t.Fatal("managed task accepted an env-wrapped external Codex App Server")
+	}
+}
+
+func TestManagedCodexArgumentsStopAtPromptBoundary(t *testing.T) {
+	worktree := t.TempDir()
+	command := []string{"codex", "--", "--add-dir", worktree}
+	got := managedAgentCommand(Record{"worktree_path": worktree}, command)
+	want := []string{"codex", "--add-dir", worktree, "--", "--add-dir", worktree}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("managed command = %#v, want %#v", got, want)
+	}
+
+	config := "tui.status_line=prompt-text"
+	got = stripManagedCodexTUIConfigs([]string{"codex", "-c", "tui.status_line=old", "--", "-c", config}, 0)
+	want = []string{"codex", "--", "-c", config}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stripped command = %#v, want %#v", got, want)
+	}
 }
 
 func TestClaudeSessionManagementRunsDirectly(t *testing.T) {
