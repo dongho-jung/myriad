@@ -70,24 +70,43 @@ func commandExecutableIndex(command []string, executable string) int {
 				index++
 				break
 			}
+			if value == "-" {
+				index++
+				continue
+			}
 			if strings.Contains(value, "=") && !strings.HasPrefix(value, "-") {
 				index++
 				continue
 			}
 			switch value {
-			case "-i", "--ignore-environment", "-0", "--null", "--debug":
+			case "-i", "--ignore-environment", "-0", "--null", "-v", "--debug",
+				"--block-signal", "--default-signal", "--ignore-signal", "--list-signal-handling":
 				index++
 				continue
-			case "-u", "--unset", "-C", "--chdir":
+			case "-a", "--argv0", "-u", "--unset", "-C", "--chdir":
 				if index+1 >= len(command) {
 					return -1
 				}
 				index += 2
 				continue
+			case "-S", "--split-string":
+				return -1
 			}
-			if strings.HasPrefix(value, "--unset=") || strings.HasPrefix(value, "--chdir=") {
+			if strings.HasPrefix(value, "--argv0=") || strings.HasPrefix(value, "--unset=") ||
+				strings.HasPrefix(value, "--chdir=") || strings.HasPrefix(value, "--block-signal=") ||
+				strings.HasPrefix(value, "--default-signal=") || strings.HasPrefix(value, "--ignore-signal=") {
 				index++
 				continue
+			}
+			if strings.HasPrefix(value, "--split-string=") {
+				return -1
+			}
+			if len(value) > 2 && (strings.HasPrefix(value, "-a") || strings.HasPrefix(value, "-u") || strings.HasPrefix(value, "-C")) {
+				index++
+				continue
+			}
+			if strings.HasPrefix(value, "-") {
+				return -1
 			}
 			break
 		}

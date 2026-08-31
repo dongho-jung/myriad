@@ -437,6 +437,41 @@ func TestManagedTaskRejectsExternalCodexAppServer(t *testing.T) {
 	if err := validateForegroundAgentCommand("codex", wrapped, true); err == nil {
 		t.Fatal("managed task accepted an env-wrapped external Codex App Server")
 	}
+	for _, command := range [][]string{
+		{"env", "-uCODEX_TOKEN", "codex", "--remote", "unix:///tmp/codex.sock"},
+		{"env", "-a", "my-codex", "codex", "--remote", "unix:///tmp/codex.sock"},
+		{"env", "--block-signal=TERM", "codex", "--remote", "unix:///tmp/codex.sock"},
+	} {
+		if err := validateForegroundAgentCommand("codex", command, true); err == nil {
+			t.Errorf("managed task accepted env-wrapped remote command %#v", command)
+		}
+	}
+	if err := validateForegroundAgentCommand("codex", []string{"env", "-S", "codex --remote unix:///tmp/codex.sock"}, true); err == nil {
+		t.Fatal("managed task accepted an opaque env split-string command")
+	}
+}
+
+func TestCommandExecutableIndexParsesEnvOptions(t *testing.T) {
+	commands := [][]string{
+		{"env", "-uCODEX_TOKEN", "codex"},
+		{"env", "-a", "my-codex", "codex"},
+		{"env", "--argv0=my-codex", "codex"},
+		{"env", "--block-signal=TERM", "codex"},
+		{"env", "-", "CODEX_TOKEN=value", "--", "codex"},
+	}
+	for _, command := range commands {
+		if index := commandExecutableIndex(command, "codex"); index != len(command)-1 {
+			t.Errorf("executable index for %#v = %d, want %d", command, index, len(command)-1)
+		}
+	}
+	for _, command := range [][]string{
+		{"env", "-S", "codex --remote unix:///tmp/server.sock"},
+		{"env", "--split-string=codex --remote unix:///tmp/server.sock"},
+	} {
+		if index := commandExecutableIndex(command, "codex"); index >= 0 {
+			t.Errorf("opaque command %#v exposed executable at %d", command, index)
+		}
+	}
 }
 
 func TestManagedCodexArgumentsStopAtPromptBoundary(t *testing.T) {

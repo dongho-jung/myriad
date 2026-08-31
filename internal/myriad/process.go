@@ -167,14 +167,22 @@ func validateForegroundAgentCommand(agent string, command []string, lockManaged 
 	if !lockManaged {
 		return nil
 	}
+	codex := commandExecutableIndex(command, "codex")
+	claudeExecutable := commandExecutableIndex(command, "claude")
+	if agent == "codex" && codex < 0 {
+		return fail("managed Codex task requires a directly identifiable codex executable")
+	}
+	if agent == "claude" && claudeExecutable < 0 {
+		return fail("managed Claude task requires a directly identifiable claude executable")
+	}
 	if codexUsesRemoteAppServer(command) {
 		return fail("Codex --remote uses an external App Server lifecycle and cannot run inside a managed Myriad task")
 	}
-	claude := agent == "claude" || commandExecutableIndex(command, "claude") >= 0
+	claude := agent == "claude" || claudeExecutable >= 0
 	if !claude {
 		return nil
 	}
-	if executable := commandExecutableIndex(command, "claude"); executable >= 0 && claudeDirectInvocation(command[executable+1:]) {
+	if claudeExecutable >= 0 && claudeDirectInvocation(command[claudeExecutable+1:]) {
 		return fail("this Claude command owns a separate session lifecycle and cannot run inside a managed Myriad task")
 	}
 	for _, value := range command {
