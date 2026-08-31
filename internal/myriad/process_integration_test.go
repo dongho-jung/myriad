@@ -776,6 +776,39 @@ func TestValidationStopsDetachedDescendant(t *testing.T) {
 	waitForProcessExit(t, pid)
 }
 
+func TestValidationDoesNotReadInteractiveTerminal(t *testing.T) {
+	if _, err := exec.LookPath("script"); err != nil {
+		t.Skip("util-linux script is unavailable")
+	}
+	myriad, helper := testMyriadBinaries(t)
+	repository := testRepository(t)
+	store := testStore(t)
+	check := displayCommand([]string{helper, "stdin-eof", "unused"})
+	arguments := []string{
+		myriad, "start", "--agent", "custom", "--task", "noninteractive-validation",
+		"--check", check, "--check-timeout", "0.5", "--quiet", "--",
+		helper, "commit", "validated-result.txt",
+	}
+	command := exec.Command("script", "--quiet", "--return", "--command", displayCommand(arguments), "/dev/null")
+	command.Dir = repository
+	command.Env = os.Environ()
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("managed validation inherited interactive stdin: %v\n%s", err, output)
+	}
+	tasks := store.All(true)
+	if len(tasks) != 1 || stringValue(tasks[0], "status") != StatusIntegrated {
+		t.Fatalf("unexpected validation result: %s", describe(tasks))
+	}
+	attempts := recordSlice(tasks[0], "validation_attempts")
+	if len(attempts) != 1 {
+		t.Fatalf("validation attempt count = %d, want 1", len(attempts))
+	}
+	attempt := anyRecord(attempts[0])
+	if stringValue(attempt, "outcome") != "passed" || !strings.Contains(stringValue(attempt, "stdout_tail"), "noninteractive") {
+		t.Fatalf("validation diagnostics were not retained: %s", describe(attempt))
+	}
+}
+
 func TestValidationTimeoutPreservesResult(t *testing.T) {
 	_, helper := testMyriadBinaries(t)
 	repository := testRepository(t)

@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -15,27 +17,91 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func runValidationProcess(command []string, directory string, environment []string, timeout time.Duration, started func(Record) error) (error, bool) {
+type tailWriter struct {
+	mutex     sync.Mutex
+	payload   []byte
+	limit     int
+	truncated bool
+}
+
+func newTailWriter(limit int) *tailWriter {
+	return &tailWriter{limit: limit}
+}
+
+func (writer *tailWriter) Write(payload []byte) (int, error) {
+	written := len(payload)
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+	if writer.limit <= 0 {
+		writer.truncated = writer.truncated || len(payload) > 0
+		return written, nil
+	}
+	if len(payload) >= writer.limit {
+		writer.payload = append(writer.payload[:0], payload[len(payload)-writer.limit:]...)
+		writer.truncated = true
+		return written, nil
+	}
+	if overflow := len(writer.payload) + len(payload) - writer.limit; overflow > 0 {
+		copy(writer.payload, writer.payload[overflow:])
+		writer.payload = writer.payload[:len(writer.payload)-overflow]
+		writer.truncated = true
+	}
+	writer.payload = append(writer.payload, payload...)
+	return written, nil
+}
+
+func (writer *tailWriter) snapshot() (string, bool) {
+	writer.mutex.Lock()
+	defer writer.mutex.Unlock()
+	return string(writer.payload), writer.truncated
+}
+
+type validationProcessResult struct {
+	WaitErr         error
+	TimedOut        bool
+	StdoutTail      string
+	StderrTail      string
+	OutputTruncated bool
+}
+
+func runValidationProcess(command []string, directory string, environment []string, timeout time.Duration, started func(Record) error) validationProcessResult {
+	stdout, stderr := newTailWriter(validationTailBytes), newTailWriter(validationTailBytes)
+	result := func(waitErr error, timedOut bool) validationProcessResult {
+		stdoutTail, stdoutTruncated := stdout.snapshot()
+		stderrTail, stderrTruncated := stderr.snapshot()
+		return validationProcessResult{
+			WaitErr: waitErr, TimedOut: timedOut,
+			StdoutTail: stdoutTail, StderrTail: stderrTail,
+			OutputTruncated: stdoutTruncated || stderrTruncated,
+		}
+	}
 	executable, err := executablePath()
 	if err != nil {
-		return err, false
+		return result(err, false)
 	}
 	arguments := append([]string{internalValidate, "--"}, command...)
 	cmd := exec.Command(executable, arguments...)
 	cmd.Dir = directory
-	cmd.Env = environment
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Env = overlayEnvironment(environment, map[string]string{
+		"GIT_PAGER": "cat", "GIT_TERMINAL_PROMPT": "0", "PAGER": "cat",
+	})
+	// Validation is deliberately non-interactive. The foreground coding agent
+	// has already exited when lifecycle checks run, so a validation child in its
+	// own process group must never read from or write directly to the terminal.
+	// Go attaches nil stdin to /dev/null; output is relayed by this foreground
+	// launcher and retained as a bounded diagnostic tail.
+	cmd.Stdin = nil
+	cmd.Stdout = io.MultiWriter(stdout, os.Stdout)
+	cmd.Stderr = io.MultiWriter(stderr, os.Stderr)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: unix.SIGTERM}
 	if err := cmd.Start(); err != nil {
-		return err, false
+		return result(err, false)
 	}
 	if started != nil {
 		if err := started(processRecord(cmd.Process.Pid, "validation", cmd.Process.Pid)); err != nil {
 			_ = unix.Kill(-cmd.Process.Pid, unix.SIGKILL)
 			_ = cmd.Wait()
-			return err, false
+			return result(err, false)
 		}
 	}
 	done := make(chan error, 1)
@@ -44,7 +110,7 @@ func runValidationProcess(command []string, directory string, environment []stri
 	defer timer.Stop()
 	select {
 	case waitErr := <-done:
-		return waitErr, false
+		return result(waitErr, false)
 	case <-timer.C:
 		_ = unix.Kill(cmd.Process.Pid, unix.SIGTERM)
 	}
@@ -52,10 +118,41 @@ func runValidationProcess(command []string, directory string, environment []stri
 	defer grace.Stop()
 	select {
 	case waitErr := <-done:
-		return waitErr, true
+		return result(waitErr, true)
 	case <-grace.C:
 		_ = unix.Kill(-cmd.Process.Pid, unix.SIGKILL)
-		return <-done, true
+		return result(<-done, true)
+	}
+}
+
+func appendValidationAttempt(task Record, attempt Record) {
+	history := append([]any{}, recordSlice(task, "validation_attempts")...)
+	history = append(history, attempt)
+	if len(history) > validationHistory {
+		history = history[len(history)-validationHistory:]
+	}
+	task["validation_attempts"] = history
+}
+
+func recordValidationOutput(attempt Record, result validationProcessResult) {
+	attempt["finished_at"] = now()
+	attempt["exit_code"] = exitCode(result.WaitErr)
+	attempt["timed_out"] = result.TimedOut
+	if result.WaitErr == nil {
+		attempt["outcome"] = "passed"
+	} else if result.TimedOut {
+		attempt["outcome"] = "timed_out"
+	} else {
+		attempt["outcome"] = "failed"
+	}
+	if result.StdoutTail != "" {
+		attempt["stdout_tail"] = result.StdoutTail
+	}
+	if result.StderrTail != "" {
+		attempt["stderr_tail"] = result.StderrTail
+	}
+	if result.OutputTruncated {
+		attempt["output_truncated"] = true
 	}
 }
 
@@ -172,23 +269,34 @@ func validateCandidate(store *Store, task Record, candidate, targetSHA, expected
 			timeout = defaultCheckTimeout
 			timeoutSeconds = timeout.Seconds()
 		}
-		waitErr, timedOut := runValidationProcess(
+		attempt := Record{
+			"command": stringsToAny(command), "directory": directories[index],
+			"started_at": now(), "timeout_seconds": timeoutSeconds, "outcome": "running",
+		}
+		appendValidationAttempt(task, attempt)
+		if err := saveValidationState(store, task); err != nil {
+			return false, err
+		}
+		result := runValidationProcess(
 			command, directories[index], taskEnvironment(candidateTask),
 			timeout,
 			func(owner Record) error {
 				if owner == nil {
 					return fail("cannot record validation process identity")
 				}
+				attempt["process"] = cloneRecord(owner)
 				task["validation_process"] = owner
 				return saveValidationState(store, task)
 			},
 		)
-		if waitErr != nil && exitCode(waitErr) == 127 && !timedOut {
-			return validationFailed(store, task, Record{"command": stringsToAny(command), "reason": waitErr.Error()})
-		}
+		recordValidationOutput(attempt, result)
 		delete(task, "validation_process")
 		if err := saveValidationState(store, task); err != nil {
 			return false, err
+		}
+		waitErr, timedOut := result.WaitErr, result.TimedOut
+		if waitErr != nil && exitCode(waitErr) == 127 && !timedOut {
+			return validationFailed(store, task, Record{"command": stringsToAny(command), "reason": waitErr.Error()})
 		}
 		if unchanged, reason := candidateUnchanged(candidate, expectedHead); !unchanged {
 			return validationFailed(store, task, Record{"command": stringsToAny(command), "exit_code": exitCode(waitErr), "reason": reason})

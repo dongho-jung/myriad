@@ -76,6 +76,13 @@ func main() {
 		}
 	case "noop":
 		return
+	case "stdin-eof":
+		buffer := make([]byte, 1)
+		count, err := os.Stdin.Read(buffer)
+		if count != 0 || err != io.EOF {
+			os.Exit(18)
+		}
+		_, _ = os.Stdout.WriteString("validation stdin is noninteractive\n")
 	case "interrupt-hook":
 		if len(os.Args) < 4 {
 			os.Exit(2)

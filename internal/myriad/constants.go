@@ -24,6 +24,8 @@ const (
 	maxInboxBytes       = 1024 * 1024
 	maxHookInputBytes   = 1024 * 1024
 	maxCodexRPCBytes    = 32 * 1024 * 1024
+	validationTailBytes = 16 * 1024
+	validationHistory   = 16
 	defaultCheckTimeout = time.Hour
 
 	handoffExitCode = 75
