@@ -457,6 +457,35 @@ func TestListedWorktreesPreservesUnusualPaths(t *testing.T) {
 	}
 }
 
+func TestGitCommandsIgnoreInheritedRepositorySelection(t *testing.T) {
+	repository := testRepository(t)
+	other := testRepository(t)
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	t.Setenv("GIT_WORK_TREE", other)
+
+	root, err := repoRoot(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := canonical(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != want {
+		t.Fatalf("repository root = %q, want %q", root, want)
+	}
+}
+
+func TestTargetCheckoutRejectsDuplicateBranch(t *testing.T) {
+	repository := testRepository(t)
+	duplicate := filepath.Join(t.TempDir(), "duplicate-main")
+	testCommand(t, repository, "git", "worktree", "add", "--force", "-q", duplicate, "main")
+
+	if _, err := targetCheckout(repository, "main"); err == nil {
+		t.Fatal("duplicate target branch checkouts were accepted")
+	}
+}
+
 func TestRecordedOrphanRemainsManageable(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)

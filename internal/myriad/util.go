@@ -50,13 +50,16 @@ type commandResult struct {
 	ExitCode int
 }
 
-func runCommand(cwd string, capture bool, argv ...string) (commandResult, error) {
+func runCommandWithEnvironment(cwd string, capture bool, environment []string, argv ...string) (commandResult, error) {
 	if len(argv) == 0 {
 		return commandResult{}, fail("empty command")
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	if cwd != "" {
 		cmd.Dir = cwd
+	}
+	if environment != nil {
+		cmd.Env = environment
 	}
 	var stdout, stderr bytes.Buffer
 	if capture {
@@ -81,7 +84,11 @@ func runCommand(cwd string, capture bool, argv ...string) (commandResult, error)
 }
 
 func checkedCommand(cwd string, argv ...string) (commandResult, error) {
-	result, err := runCommand(cwd, true, argv...)
+	return checkedCommandWithEnvironment(cwd, nil, argv...)
+}
+
+func checkedCommandWithEnvironment(cwd string, environment []string, argv ...string) (commandResult, error) {
+	result, err := runCommandWithEnvironment(cwd, true, environment, argv...)
 	if err != nil {
 		return result, err
 	}

@@ -16,12 +16,43 @@ const (
 	targetUnrelated    = "unrelated-history"
 )
 
+var gitRepositoryEnvironment = []string{
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES",
+	"GIT_CEILING_DIRECTORIES",
+	"GIT_COMMON_DIR",
+	"GIT_CONFIG",
+	"GIT_CONFIG_COUNT",
+	"GIT_CONFIG_PARAMETERS",
+	"GIT_DIR",
+	"GIT_DISCOVERY_ACROSS_FILESYSTEM",
+	"GIT_GRAFT_FILE",
+	"GIT_IMPLICIT_WORK_TREE",
+	"GIT_INDEX_FILE",
+	"GIT_NAMESPACE",
+	"GIT_NO_REPLACE_OBJECTS",
+	"GIT_OBJECT_DIRECTORY",
+	"GIT_PREFIX",
+	"GIT_QUARANTINE_PATH",
+	"GIT_REPLACE_REF_BASE",
+	"GIT_SHALLOW_FILE",
+	"GIT_WORK_TREE",
+}
+
 func gitCommand(cwd string, check bool, args ...string) (commandResult, error) {
 	argv := append([]string{"git"}, args...)
+	environment := overlayEnvironment(
+		environmentWithout(os.Environ(), gitRepositoryEnvironment...),
+		map[string]string{
+			"GIT_NO_REPLACE_OBJECTS": "1",
+			"GIT_PAGER":              "cat",
+			"GIT_TERMINAL_PROMPT":    "0",
+			"PAGER":                  "cat",
+		},
+	)
 	if check {
-		return checkedCommand(cwd, argv...)
+		return checkedCommandWithEnvironment(cwd, environment, argv...)
 	}
-	return runCommand(cwd, true, argv...)
+	return runCommandWithEnvironment(cwd, true, environment, argv...)
 }
 
 func repoRoot(cwd string) (string, error) {
@@ -173,12 +204,28 @@ func targetCheckout(repository, branch string) (string, error) {
 		return "", err
 	}
 	expected := "refs/heads/" + branch
+	matches := []string{}
+	seen := map[string]bool{}
 	for _, record := range records {
 		if record["branch"] == expected {
-			return canonical(record["worktree"])
+			path, err := canonical(record["worktree"])
+			if err != nil {
+				return "", err
+			}
+			if !seen[path] {
+				matches = append(matches, path)
+				seen[path] = true
+			}
 		}
 	}
-	return "", nil
+	if len(matches) == 0 {
+		return "", nil
+	}
+	if len(matches) > 1 {
+		sort.Strings(matches)
+		return "", fail("target branch %s is checked out in multiple worktrees: %s", branch, strings.Join(matches, ", "))
+	}
+	return matches[0], nil
 }
 
 func worktreeRegistered(repository, path string) (bool, error) {
