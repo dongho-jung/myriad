@@ -500,10 +500,16 @@ func cleanupTaskReserved(store *Store, task Record) (bool, error) {
 	}
 	branch := stringValue(task, "branch")
 	if branch != "" && branchExists(repository, branch) {
-		head, _ := gitRef(repository, "refs/heads/"+branch)
+		head, err := gitRef(repository, "refs/heads/"+branch)
+		if err != nil {
+			return false, err
+		}
 		safe := stringValue(task, "status") == StatusFailed && head == stringValue(task, "base_sha")
 		if !safe && stringValue(task, "status") == StatusCompleted {
-			differs, _ := treesDiffer(repository, stringValue(task, "base_sha"), head)
+			differs, err := treesDiffer(repository, stringValue(task, "base_sha"), head)
+			if err != nil {
+				return false, err
+			}
 			safe = !differs
 		}
 		integrated := stringValue(task, "integrated_commit")
@@ -511,7 +517,19 @@ func cleanupTaskReserved(store *Store, task Record) (bool, error) {
 			safe = isAncestor(repository, head, integrated) || stringValue(task, "integration_redundant_result") == head
 		}
 		if safe {
-			_, _ = gitCommand(repository, false, "branch", "-D", branch)
+			deleted, err := gitCommand(repository, false, "branch", "-D", branch)
+			if err != nil {
+				return false, err
+			}
+			if deleted.ExitCode != 0 {
+				detail := strings.TrimSpace(deleted.Stderr + deleted.Stdout)
+				if detail == "" {
+					detail = fmt.Sprintf("git branch -D exited with %d", deleted.ExitCode)
+				}
+				task["cleanup_warning"] = "task branch deletion failed: " + detail
+				return false, store.Save(task)
+			}
+			delete(task, "cleanup_warning")
 			task["branch_deleted_at"] = now()
 			changed = true
 		}

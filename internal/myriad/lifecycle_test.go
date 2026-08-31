@@ -76,6 +76,43 @@ func TestTaskIntegratesFastForwardAndCleansUp(t *testing.T) {
 	}
 }
 
+func TestCleanupRecordsBranchDeletionFailure(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	path := stringValue(task, "worktree_path")
+	branch := stringValue(task, "branch")
+	task["status"] = StatusCompleted
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	testCommand(t, path, "git", "switch", "--detach", "-q")
+	holder := filepath.Join(t.TempDir(), "branch-holder")
+	testCommand(t, repository, "git", "worktree", "add", "-q", holder, branch)
+
+	cleaned, err := cleanupTask(store, task, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleaned {
+		t.Fatal("cleanup reported success after branch deletion failed")
+	}
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(current, "branch_deleted_at") != "" {
+		t.Fatal("failed branch deletion was recorded as successful")
+	}
+	if warning := stringValue(current, "cleanup_warning"); !strings.Contains(warning, "task branch deletion failed") {
+		t.Fatalf("unexpected cleanup warning: %s", warning)
+	}
+	if !branchExists(repository, branch) {
+		t.Fatal("branch disappeared despite deletion failure")
+	}
+}
+
 func TestTaskRebasesOntoAdvancedTarget(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)

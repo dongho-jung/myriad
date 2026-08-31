@@ -344,18 +344,21 @@ func advanceIntegrationTarget(repository, target, targetSHA, candidateHead, init
 		return "target checkout topology changed during validation"
 	}
 	if checkout != "" {
-		changes, _ := worktreeChanges(checkout)
+		changes, err := worktreeChanges(checkout)
+		if err != nil {
+			return "target checkout could not be inspected: " + err.Error()
+		}
 		if len(changes.Normal) > 0 {
 			return "target checkout became dirty: " + checkout
 		}
-		advanced, _ := gitCommand(checkout, false, "-c", "core.hooksPath=/dev/null", "merge", "--ff-only", candidateHead)
-		if advanced.ExitCode != 0 {
+		advanced, err := gitCommand(checkout, false, "-c", "core.hooksPath=/dev/null", "merge", "--ff-only", candidateHead)
+		if err != nil || advanced.ExitCode != 0 {
 			return "target could not fast-forward"
 		}
 		return ""
 	}
-	updated, _ := gitCommand(repository, false, "update-ref", "refs/heads/"+target, candidateHead, targetSHA)
-	if updated.ExitCode != 0 {
+	updated, err := gitCommand(repository, false, "update-ref", "refs/heads/"+target, candidateHead, targetSHA)
+	if err != nil || updated.ExitCode != 0 {
 		return "target advanced"
 	}
 	return ""
@@ -391,7 +394,10 @@ func integrateTask(store *Store, task Record) bool {
 	}
 	defer integrationLock.Unlock()
 	if branchExists(repository, target) {
-		targetSHA, _ := gitRef(repository, "refs/heads/"+target)
+		targetSHA, err := gitRef(repository, "refs/heads/"+target)
+		if err != nil {
+			return deferIntegration(store, task, StatusRecovery, "cannot resolve target branch: "+err.Error(), false)
+		}
 		if isAncestor(repository, resultCommit, targetSHA) {
 			task["integrated_commit"] = targetSHA
 			task["integration_strategy"] = "already-present"
@@ -440,10 +446,10 @@ func integrateTask(store *Store, task Record) bool {
 }
 
 func integrateTaskReserved(store *Store, task Record, repository, target, resultCommit, candidate string) bool {
-	if !branchExists(repository, target) {
-		return deferIntegration(store, task, StatusRecovery, "target branch no longer exists: "+target, true)
+	targetSHA, err := gitRef(repository, "refs/heads/"+target)
+	if err != nil {
+		return deferIntegration(store, task, StatusRecovery, "cannot resolve target branch "+target+": "+err.Error(), true)
 	}
-	targetSHA, _ := gitRef(repository, "refs/heads/"+target)
 	base := stringValue(task, "base_sha")
 	if base == "" || !isAncestor(repository, base, resultCommit) {
 		return deferIntegration(store, task, StatusRecovery, "result does not descend from the recorded base", true)
@@ -468,9 +474,15 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 	if !isAncestor(repository, base, targetSHA) {
 		return deferIntegration(store, task, StatusRecovery, "target no longer descends from the task base; automatic integration refused", true)
 	}
-	checkout, _ := targetCheckout(repository, target)
+	checkout, err := targetCheckout(repository, target)
+	if err != nil {
+		return deferIntegration(store, task, StatusRecovery, "cannot inspect target checkout topology: "+err.Error(), true)
+	}
 	if checkout != "" {
-		changes, _ := worktreeChanges(checkout)
+		changes, err := worktreeChanges(checkout)
+		if err != nil {
+			return deferIntegration(store, task, StatusReady, "target checkout could not be inspected; integration queued: "+checkout, true)
+		}
 		if len(changes.Normal) > 0 {
 			return deferIntegration(store, task, StatusReady, "target checkout is dirty; integration queued: "+checkout, true)
 		}
@@ -510,7 +522,10 @@ func integrateTaskReserved(store *Store, task Record, repository, target, result
 		_ = store.Save(task)
 		return deferIntegration(store, task, StatusRecovery, "integration candidate changed after validation", true)
 	}
-	differs, _ := treesDiffer(repository, targetSHA, candidateHead)
+	differs, err := treesDiffer(repository, targetSHA, candidateHead)
+	if err != nil {
+		return deferIntegration(store, task, StatusRecovery, "cannot compare integration candidate: "+err.Error(), true)
+	}
 	if !differs {
 		task["integrated_commit"] = targetSHA
 		task["integration_strategy"] = "redundant"
@@ -569,7 +584,10 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if strings.TrimSpace(branch.Stdout) != stringValue(task, "branch") {
 		return nil, fail("unexpected task branch: %s", strings.TrimSpace(branch.Stdout))
 	}
-	resultCommit, _ := gitRef(path, "HEAD")
+	resultCommit, err := gitRef(path, "HEAD")
+	if err != nil {
+		return nil, err
+	}
 	base := stringValue(task, "base_sha")
 	repository := stringValue(task, "repository")
 	if base == "" || !isAncestor(repository, base, resultCommit) {
@@ -597,21 +615,30 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 		return nil, fail("repository has another active lifecycle operation")
 	}
 	defer activity.Unlock()
-	targetSHA, _ := gitRef(repository, "refs/heads/"+target)
+	targetSHA, err := gitRef(repository, "refs/heads/"+target)
+	if err != nil {
+		return nil, err
+	}
 	if !isAncestor(repository, base, targetSHA) {
 		return nil, fail("target no longer descends from the recorded task base")
 	}
 	if isAncestor(repository, resultCommit, targetSHA) {
 		return Record{"result_commit": resultCommit, "published_commit": targetSHA, "strategy": "already-present"}, nil
 	}
-	findings, _ := forbiddenHistory(repository, resultCommit, targetSHA)
+	findings, err := forbiddenHistory(repository, resultCommit, targetSHA)
+	if err != nil {
+		return nil, err
+	}
 	if len(findings) > 0 {
 		return nil, fail("publish result tracks forbidden paths: %s", strings.Join(findingPaths(findings), ", "))
 	}
 	if !removeIntegrationWorktree(repository, candidate) {
 		return nil, fail("stale publish candidate could not be removed: %s", candidate)
 	}
-	checkout, _ := targetCheckout(repository, target)
+	checkout, err := targetCheckout(repository, target)
+	if err != nil {
+		return nil, err
+	}
 	var checkoutLock *fileLock
 	if checkout != "" && checkout != path {
 		checkoutLock, err = store.CheckoutLock(checkout, "", false)
@@ -621,7 +648,10 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 		defer checkoutLock.Unlock()
 	}
 	if checkout != "" {
-		changes, _ := worktreeChanges(checkout)
+		changes, err := worktreeChanges(checkout)
+		if err != nil {
+			return nil, err
+		}
 		if len(changes.Normal) > 0 {
 			return nil, fail("target checkout is dirty: %s", checkout)
 		}
@@ -637,8 +667,14 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if unchanged, reason := candidateUnchanged(candidate, candidateHead); !unchanged {
 		return nil, fail("publish candidate changed after validation: %s", reason)
 	}
-	current, _ := gitRef(path, "HEAD")
-	currentChanges, _ := worktreeChanges(path)
+	current, err := gitRef(path, "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	currentChanges, err := worktreeChanges(path)
+	if err != nil {
+		return nil, err
+	}
 	if current != resultCommit || len(currentChanges.Normal) > 0 {
 		return nil, fail("task worktree changed while publish was validating")
 	}
@@ -647,7 +683,10 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 			return nil, err
 		}
 	}
-	differs, _ := treesDiffer(repository, targetSHA, candidateHead)
+	differs, err := treesDiffer(repository, targetSHA, candidateHead)
+	if err != nil {
+		return nil, err
+	}
 	if !differs {
 		return Record{"result_commit": resultCommit, "published_commit": targetSHA, "strategy": "redundant"}, nil
 	}
