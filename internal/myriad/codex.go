@@ -493,7 +493,7 @@ func codexAppServerCommand(agentCommand []string, socketPath string, provisionHo
 type codexServer struct {
 	Command *exec.Cmd
 	Socket  string
-	done    chan struct{}
+	reaped  bool
 	waitErr error
 }
 
@@ -512,23 +512,68 @@ func spawnCodexServer(command []string, environment []string) (*codexServer, err
 	if err := cmd.Start(); err != nil {
 		return nil, fail("cannot start Codex App Server: %v", err)
 	}
-	server := &codexServer{Command: cmd, done: make(chan struct{})}
-	go func() {
-		server.waitErr = cmd.Wait()
-		close(server.done)
-	}()
-	return server, nil
+	return &codexServer{Command: cmd}, nil
 }
 
 func codexServerExited(server *codexServer) (bool, error) {
-	if server == nil || server.done == nil {
+	if server == nil || server.Command == nil || server.Command.Process == nil {
 		return false, nil
 	}
-	select {
-	case <-server.done:
+	if server.reaped {
 		return true, server.waitErr
-	default:
+	}
+	var status unix.WaitStatus
+	pid, err := unix.Wait4(server.Command.Process.Pid, &status, unix.WNOHANG, nil)
+	if errors.Is(err, unix.EINTR) {
 		return false, nil
+	}
+	if errors.Is(err, unix.ECHILD) {
+		server.reaped = true
+		server.waitErr = err
+		return true, err
+	}
+	if err != nil {
+		return false, err
+	}
+	if pid == 0 {
+		return false, nil
+	}
+	server.reaped = true
+	server.waitErr = processStatusError(status)
+	_ = server.Command.Process.Release()
+	return true, server.waitErr
+}
+
+func processStatusError(status unix.WaitStatus) error {
+	if status.Exited() {
+		if code := status.ExitStatus(); code != 0 {
+			return fmt.Errorf("exit status %d", code)
+		}
+		return nil
+	}
+	if status.Signaled() {
+		return fmt.Errorf("signal: %s", status.Signal())
+	}
+	return fmt.Errorf("unexpected wait status %d", status)
+}
+
+func reapCodexServer(server *codexServer) {
+	if server == nil || server.Command == nil || server.Command.Process == nil || server.reaped {
+		return
+	}
+	for {
+		var status unix.WaitStatus
+		pid, err := unix.Wait4(server.Command.Process.Pid, &status, 0, nil)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		server.reaped = true
+		server.waitErr = err
+		if err == nil && pid > 0 {
+			server.waitErr = processStatusError(status)
+			_ = server.Command.Process.Release()
+		}
+		return
 	}
 }
 
@@ -555,24 +600,17 @@ func stopCodexServer(server *codexServer, reap bool) {
 	exited, _ := codexServerExited(server)
 	if !exited {
 		_ = unix.Kill(-pid, unix.SIGTERM)
-		timer := time.NewTimer(2 * time.Second)
-		select {
-		case <-server.done:
-			exited = true
-		case <-timer.C:
-		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
+		deadline := time.Now().Add(2 * time.Second)
+		for !exited && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+			exited, _ = codexServerExited(server)
 		}
 		if !exited {
 			_ = unix.Kill(-pid, unix.SIGKILL)
 		}
 	}
-	if reap && !exited && server.done != nil {
-		<-server.done
+	if reap && !exited {
+		reapCodexServer(server)
 	}
 	if server.Socket != "" {
 		_ = os.Remove(server.Socket)

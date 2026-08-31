@@ -141,6 +141,9 @@ func TestStopCodexServerReapsPromptly(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("App Server shutdown took %s", elapsed)
 	}
+	if !server.reaped {
+		t.Fatal("App Server child was not reaped")
+	}
 }
 
 func TestFreshManagedCodexAppServerDoesNotResumeEmptyThread(t *testing.T) {

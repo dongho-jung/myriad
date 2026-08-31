@@ -51,6 +51,32 @@ func waitForProcessExit(t *testing.T, pid int) {
 	t.Fatalf("process %d did not exit", pid)
 }
 
+func TestProcessAliveRejectsZombie(t *testing.T) {
+	command := exec.Command("sleep", "0.05")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	record := processRecord(command.Process.Pid, "test-child", 0)
+	if record == nil {
+		_ = command.Wait()
+		t.Fatal("could not record child process identity")
+	}
+	defer func() { _ = command.Wait() }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_, state := processIdentity(command.Process.Pid)
+		if state == 'Z' {
+			if processAlive(record) {
+				t.Fatal("zombie child was reported as alive")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("child did not enter zombie state before being reaped")
+}
+
 func TestSupervisorStopsDetachedDescendantBeforeReturning(t *testing.T) {
 	myriad, helper := testMyriadBinaries(t)
 	repository := testRepository(t)

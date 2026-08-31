@@ -248,20 +248,28 @@ func marshalPrivate(value any) ([]byte, error) {
 	return append(payload, '\n'), nil
 }
 
-func processStart(pid int) string {
+func processIdentity(pid int) (string, byte) {
 	payload, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
-		return ""
+		return "", 0
 	}
 	closing := bytes.LastIndexByte(payload, ')')
 	if closing < 0 || closing+2 >= len(payload) {
-		return ""
+		return "", 0
 	}
 	fields := strings.Fields(string(payload[closing+2:]))
 	if len(fields) <= 19 {
+		return "", 0
+	}
+	return fields[19], fields[0][0]
+}
+
+func processStart(pid int) string {
+	start, state := processIdentity(pid)
+	if state == 'Z' || state == 'X' {
 		return ""
 	}
-	return fields[19]
+	return start
 }
 
 func processRecord(pid int, role string, pgid int) Record {
