@@ -681,21 +681,33 @@ func cleanupCommand(store *Store, taskID string, all bool) int {
 	}
 	failed := false
 	for _, snapshot := range tasks {
-		lock, err := store.Lock("task:"+stringValue(snapshot, "task_id"), false)
+		taskID := stringValue(snapshot, "task_id")
+		lock, err := store.Lock("task:"+taskID, false)
 		if err != nil {
-			fmt.Printf("%s: busy; skipped\n", stringValue(snapshot, "task_id"))
+			fmt.Printf("%s: busy; skipped\n", taskID)
 			failed = true
 			continue
 		}
-		task, _ := store.Load(stringValue(snapshot, "task_id"))
+		task, loadErr := store.Load(taskID)
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "myriad: %s: %v\n", taskID, loadErr)
+			failed = true
+			_ = lock.Unlock()
+			continue
+		}
 		if processAlive(task["process"]) {
 			fmt.Printf("%s: active; skipped\n", stringValue(task, "task_id"))
 			failed = true
 			_ = lock.Unlock()
 			continue
 		}
-		cleaned, _ := cleanupTask(store, task, false, false)
+		cleaned, cleanupErr := cleanupTask(store, task, false, false)
 		_ = lock.Unlock()
+		if cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "myriad: %s: %v\n", taskID, cleanupErr)
+			failed = true
+			continue
+		}
 		if cleaned {
 			fmt.Printf("%s: cleaned\n", stringValue(task, "task_id"))
 		} else {

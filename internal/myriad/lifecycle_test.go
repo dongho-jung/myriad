@@ -318,3 +318,22 @@ func TestManualIntegrationPolicyLeavesReadyCommit(t *testing.T) {
 		t.Fatal("manual task branch was deleted")
 	}
 }
+
+func TestIntegrateCommandReturnsResultInspectionError(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	delete(task, "process")
+	task["worktree_path"] = repository
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	code, err := integrateTaskCommand(store, stringValue(task, "task_id"), true)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2", code)
+	}
+	if err == nil || !strings.Contains(err.Error(), "unexpected managed worktree path") {
+		t.Fatalf("unexpected integration error: %v", err)
+	}
+}

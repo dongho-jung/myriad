@@ -375,7 +375,7 @@ func recoverTask(store *Store, taskID, agent string, integrationPolicy *bool, ne
 	return exitCode, nil
 }
 
-func clearInterruptedIntegration(store *Store, task Record) {
+func clearInterruptedIntegration(store *Store, task Record) error {
 	terminateOwnedProcess(task["validation_process"])
 	candidate := stringValue(task, "integration_candidate")
 	if candidate != "" {
@@ -394,7 +394,7 @@ func clearInterruptedIntegration(store *Store, task Record) {
 	delete(task, "validation_process")
 	delete(task, "integration_process")
 	delete(task, "integration_candidate")
-	_ = store.Save(task)
+	return store.Save(task)
 }
 
 func recognizeResultOnTarget(store *Store, task Record) bool {
@@ -426,7 +426,9 @@ func integrateTaskCommand(store *Store, taskID string, quiet bool) (int, error) 
 		return 2, err
 	}
 	task["auto_integrate"] = true
-	_ = store.Save(task)
+	if err := store.Save(task); err != nil {
+		return 2, err
+	}
 	if processAlive(task["process"]) {
 		return 2, fail("coding agent is still running")
 	}
@@ -435,11 +437,17 @@ func integrateTaskCommand(store *Store, taskID string, quiet bool) (int, error) 
 		if processAlive(task["integration_process"]) {
 			return 2, fail("integration is still running")
 		}
-		clearInterruptedIntegration(store, task)
-		_ = setStatus(store, task, StatusReady, "operator approved interrupted integration retry")
+		if err := clearInterruptedIntegration(store, task); err != nil {
+			return 2, err
+		}
+		if err := setStatus(store, task, StatusReady, "operator approved interrupted integration retry"); err != nil {
+			return 2, err
+		}
 	}
 	if stringValue(task, "result_commit") == "" {
-		_ = inspectResult(store, task, true)
+		if err := inspectResult(store, task, true); err != nil {
+			return 2, err
+		}
 	}
 	success := false
 	if stringValue(task, "status") == StatusIntegrated {
@@ -708,7 +716,7 @@ func reconcileOne(store *Store, task Record, integrate bool) {
 	}
 	status := stringValue(task, "status")
 	if stringValue(task, "integration_candidate") != "" && status != StatusIntegrating && status != StatusValidating {
-		clearInterruptedIntegration(store, task)
+		_ = clearInterruptedIntegration(store, task)
 	}
 	switch status {
 	case StatusRunning:
@@ -724,7 +732,7 @@ func reconcileOne(store *Store, task Record, integrate bool) {
 	case StatusCreated:
 		preserveInterruptedTask(store, task, "agent process ended before lifecycle completion; resume required")
 	case StatusIntegrating, StatusValidating:
-		clearInterruptedIntegration(store, task)
+		_ = clearInterruptedIntegration(store, task)
 		if recognizeResultOnTarget(store, task) {
 			return
 		}
