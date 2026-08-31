@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -142,7 +141,7 @@ func readRegular(path string, limit int64) ([]byte, error) {
 		return nil, fmt.Errorf("cannot safely open %s: %w", path, err)
 	}
 	file := os.NewFile(uintptr(fd), path)
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		return nil, err
@@ -234,8 +233,11 @@ func atomicWrite(path string, payload []byte, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer directory.Close()
-	return directory.Sync()
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		return err
+	}
+	return directory.Close()
 }
 
 func marshalPrivate(value any) ([]byte, error) {
@@ -306,15 +308,6 @@ func processAlive(value any) bool {
 		return false
 	}
 	return processStart(pid) == expected
-}
-
-func sortedKeys(value map[string]any) []string {
-	keys := make([]string, 0, len(value))
-	for key := range value {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func executablePath() (string, error) {

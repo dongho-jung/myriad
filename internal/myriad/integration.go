@@ -392,7 +392,7 @@ func integrateTask(store *Store, task Record) bool {
 		}
 		return deferIntegration(store, task, StatusRecovery, err.Error(), false)
 	}
-	defer integrationLock.Unlock()
+	defer func() { _ = integrationLock.Unlock() }()
 	if branchExists(repository, target) {
 		targetSHA, err := gitRef(repository, "refs/heads/"+target)
 		if err != nil {
@@ -416,7 +416,7 @@ func integrateTask(store *Store, task Record) bool {
 		}
 		return deferIntegration(store, task, StatusRecovery, err.Error(), false)
 	}
-	defer activity.Unlock()
+	defer func() { _ = activity.Unlock() }()
 	key, _ := repoKey(repository)
 	candidate := filepath.Join(store.Integrations, key, stringValue(task, "task_id"))
 	if !removeIntegrationWorktree(repository, candidate) {
@@ -604,17 +604,17 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 	if err != nil {
 		return nil, fail("another publish or integration is running")
 	}
-	defer publishLock.Unlock()
+	defer func() { _ = publishLock.Unlock() }()
 	integrationLock, err := store.Lock("integrate:"+stringValue(task, "git_common_dir")+":"+target, false)
 	if err != nil {
 		return nil, fail("another publish or integration is running")
 	}
-	defer integrationLock.Unlock()
+	defer func() { _ = integrationLock.Unlock() }()
 	activity, err := store.RepositoryActivityLock(repository, false, false)
 	if err != nil {
 		return nil, fail("repository has another active lifecycle operation")
 	}
-	defer activity.Unlock()
+	defer func() { _ = activity.Unlock() }()
 	targetSHA, err := gitRef(repository, "refs/heads/"+target)
 	if err != nil {
 		return nil, err
@@ -645,7 +645,7 @@ func publishTaskCheckpoint(store *Store, task Record) (Record, error) {
 		if err != nil {
 			return nil, fail("target checkout has an active agent: %s", checkout)
 		}
-		defer checkoutLock.Unlock()
+		defer func() { _ = checkoutLock.Unlock() }()
 	}
 	if checkout != "" {
 		changes, err := worktreeChanges(checkout)

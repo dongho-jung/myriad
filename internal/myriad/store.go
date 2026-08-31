@@ -271,16 +271,16 @@ func openLockFile(path string) (*os.File, error) {
 	file := os.NewFile(uintptr(fd), path)
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
-		file.Close()
+		_ = file.Close()
 		return nil, err
 	}
 	if stat.Mode&unix.S_IFMT != unix.S_IFREG || stat.Uid != uint32(os.Getuid()) || stat.Nlink != 1 {
-		file.Close()
+		_ = file.Close()
 		return nil, fail("unsafe lock file refused: %s", path)
 	}
 	if stat.Mode&0o777 != 0o600 {
 		if err := unix.Fchmod(fd, 0o600); err != nil {
-			file.Close()
+			_ = file.Close()
 			return nil, err
 		}
 	}
@@ -300,7 +300,7 @@ func acquireFileLock(name, path string, exclusive, blocking bool) (*fileLock, er
 		operation |= unix.LOCK_NB
 	}
 	if err := unix.Flock(int(file.Fd()), operation); err != nil {
-		file.Close()
+		_ = file.Close()
 		if errors.Is(err, unix.EWOULDBLOCK) || errors.Is(err, unix.EAGAIN) {
 			return nil, &lockBusyError{name: name}
 		}

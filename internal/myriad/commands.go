@@ -469,7 +469,7 @@ func contextCommand(store *Store, taskID string, jira, pullRequests []string, cl
 	if err != nil {
 		return err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	context := readTaskContext(store, taskID)
 	action := ""
 	if clearJira {
@@ -565,7 +565,7 @@ func resolveObsoleteHandoff(store *Store, taskID string) bool {
 	if err != nil {
 		return false
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	task, err := store.Load(taskID)
 	if err != nil {
 		return false
@@ -655,7 +655,7 @@ func inboxHook() error {
 		prompts = append(prompts, stringValue(message, "prompt"))
 	}
 	prompt := strings.Join(prompts, "\n\n")
-	output := Record{}
+	var output Record
 	if eventName == "Stop" {
 		output = Record{"decision": "block", "reason": prompt}
 	} else {

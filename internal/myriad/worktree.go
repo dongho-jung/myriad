@@ -138,7 +138,7 @@ func createTask(store *Store, options createTaskOptions) (Record, error) {
 	}
 	task["worktree_number"] = nextWorktreeNumber(store.All(false))
 	if err := store.Save(task); err != nil {
-		numberLock.Unlock()
+		_ = numberLock.Unlock()
 		return nil, err
 	}
 	_ = numberLock.Unlock()
@@ -180,7 +180,7 @@ func provisionTaskWorktree(store *Store, task Record, slug string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	return provisionTaskWorktreeReserved(store, task, slug)
 }
 
@@ -393,7 +393,7 @@ func cleanupTask(store *Store, task Record, repositoryReserved, checkoutReserved
 		if err != nil {
 			return false, err
 		}
-		defer activity.Unlock()
+		defer func() { _ = activity.Unlock() }()
 	}
 	var checkout *fileLock
 	if !checkoutReserved {
@@ -407,7 +407,7 @@ func cleanupTask(store *Store, task Record, repositoryReserved, checkoutReserved
 			}
 			return false, err
 		}
-		defer checkout.Unlock()
+		defer func() { _ = checkout.Unlock() }()
 	}
 	delete(task, "cleanup_warning")
 	return cleanupTaskReserved(store, task)
@@ -686,7 +686,7 @@ func taskExitCode(task Record) int {
 
 func agentExitFailed(task Record) bool {
 	exitCode := taskExitCode(task)
-	return exitCode != 0 && !(exitCode == 130 && boolValue(task, "agent_exit_graceful", false))
+	return exitCode != 0 && (exitCode != 130 || !boolValue(task, "agent_exit_graceful", false))
 }
 
 func recordAgentExit(task Record, exitCode int, graceful bool) {

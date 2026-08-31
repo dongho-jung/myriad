@@ -19,7 +19,7 @@ func launchForTask(store *Store, task Record, command []string, integrate bool, 
 		if err != nil {
 			return 2, err
 		}
-		defer taskLock.Unlock()
+		defer func() { _ = taskLock.Unlock() }()
 	}
 	current, err := store.Load(stringValue(task, "task_id"))
 	if err != nil {
@@ -83,7 +83,8 @@ func launchForTask(store *Store, task Record, command []string, integrate bool, 
 		for _, result := range attachmentResults {
 			ids = append(ids, result["task_id"])
 			status := stringValue(result, "status")
-			if status != StatusIntegrated && status != StatusCompleted && !(status == StatusReady && !boolValue(result, "auto_integrate", true)) {
+			succeeded := status == StatusIntegrated || status == StatusCompleted || status == StatusReady && !boolValue(result, "auto_integrate", true)
+			if !succeeded {
 				failures = append(failures, result)
 			}
 		}
@@ -304,7 +305,7 @@ func recoverTask(store *Store, taskID, agent string, integrationPolicy *bool, ne
 	if err != nil {
 		return 2, err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	task, err := store.Load(taskID)
 	if err != nil {
 		return 2, err
@@ -420,7 +421,7 @@ func integrateTaskCommand(store *Store, taskID string, quiet bool) (int, error) 
 	if err != nil {
 		return 2, err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	task, err := store.Load(taskID)
 	if err != nil {
 		return 2, err
@@ -546,7 +547,7 @@ func startAttachmentLease(store *Store, task Record, owner Record) error {
 	}
 	executable, err := executablePath()
 	if err != nil {
-		lock.Unlock()
+		_ = lock.Unlock()
 		return err
 	}
 	ownerPID, _ := intValue(owner["pid"])
@@ -561,7 +562,7 @@ func startAttachmentLease(store *Store, task Record, owner Record) error {
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	if err := cmd.Start(); err != nil {
-		lock.Unlock()
+		_ = lock.Unlock()
 		return err
 	}
 	_ = lock.CloseWithoutUnlock()
@@ -623,7 +624,7 @@ func attachRepository(store *Store, requested string) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	for _, existing := range attachmentTasks(store, sessionID) {
 		if stringValue(existing, "git_common_dir") == common && (stringValue(existing, "status") == StatusCreated || stringValue(existing, "status") == StatusRunning) {
 			if info, err := os.Stat(stringValue(existing, "worktree_path")); err == nil && info.IsDir() {
@@ -643,7 +644,7 @@ func attachRepository(store *Store, requested string) error {
 		TaskSlug:    stringValue(parent, "provisioning_slug"),
 	})
 	if createErr != nil {
-		activity.Unlock()
+		_ = activity.Unlock()
 		return createErr
 	}
 	task["attachment_session_id"] = sessionID
@@ -652,7 +653,7 @@ func attachRepository(store *Store, requested string) error {
 	task["process"] = cloneRecord(owner)
 	_ = setStatus(store, task, StatusRunning, "")
 	if err := startAttachmentLease(store, task, owner); err != nil {
-		activity.Unlock()
+		_ = activity.Unlock()
 		_ = setStatus(store, task, StatusRecovery, "attachment checkout lease failed: "+err.Error())
 		return err
 	}
@@ -762,7 +763,7 @@ func reconcile(store *Store, integrate, quiet bool) int {
 		fmt.Fprintln(os.Stderr, "myriad:", err)
 		return 2
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	pruneDeadSessionMetadata(store)
 	recordOrphans(store)
 	failed := false
@@ -873,7 +874,7 @@ func finalizeNativeMemory(store *Store, session Record) {
 	if err != nil {
 		return
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	current, err := readMemory(canonicalPath)
 	if err != nil {
 		return

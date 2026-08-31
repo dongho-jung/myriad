@@ -211,9 +211,7 @@ func jiraIssuesFromTask(task Record) []string {
 
 func pullRequestNumber(value string) (int, error) {
 	text := strings.TrimSpace(value)
-	if strings.HasPrefix(text, "#") {
-		text = strings.TrimPrefix(text, "#")
-	}
+	text = strings.TrimPrefix(text, "#")
 	if parsed, err := strconv.Atoi(text); err == nil && parsed > 0 {
 		return parsed, nil
 	}

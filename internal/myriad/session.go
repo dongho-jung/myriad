@@ -201,7 +201,7 @@ func updateSessionMetadata(path, sessionID string, updates Record) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	var value Record
 	if err := readJSON(path, maxJSONBytes, &value); err != nil {
 		return fail("cannot update checkout session metadata: %v", err)
@@ -238,7 +238,7 @@ func removeSessionMetadata(store *Store, checkout, sessionID, identity string) {
 	if err != nil {
 		return
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	var value Record
 	if readJSON(path, maxJSONBytes, &value) != nil || stringValue(value, "session_id") != sessionID {
 		return

@@ -26,11 +26,6 @@ func stringValue(record Record, key string) string {
 	return value
 }
 
-func optionalString(record Record, key string) (string, bool) {
-	value, ok := record[key].(string)
-	return value, ok && value != ""
-}
-
 func boolValue(record Record, key string, fallback bool) bool {
 	value, ok := record[key].(bool)
 	if !ok {

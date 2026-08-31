@@ -115,11 +115,12 @@ func Run(arguments []string) int {
 	case "reconcile":
 		integrate, quiet := true, false
 		for _, argument := range arguments[1:] {
-			if argument == "--no-integrate" {
+			switch argument {
+			case "--no-integrate":
 				integrate = false
-			} else if argument == "--quiet" {
+			case "--quiet":
 				quiet = true
-			} else {
+			default:
 				err = fail("unknown reconcile option: %s", argument)
 			}
 		}
@@ -263,22 +264,28 @@ func parseResumeOptions(arguments []string) (resumeOptions, error) {
 			options.NoIntegrate = true
 		case "--quiet":
 			options.Quiet = true
-		case "--target", "--check", "--check-timeout":
+		case "--target":
 			value, err := requireOptionValue(flags, &index, argument)
 			if err != nil {
 				return options, err
 			}
-			if argument == "--target" {
-				options.Target = value
-			} else if argument == "--check" {
-				options.Checks = append(options.Checks, value)
-			} else {
-				parsed, err := parseCheckTimeout(value)
-				if err != nil {
-					return options, err
-				}
-				options.CheckTimeout = parsed
+			options.Target = value
+		case "--check":
+			value, err := requireOptionValue(flags, &index, argument)
+			if err != nil {
+				return options, err
 			}
+			options.Checks = append(options.Checks, value)
+		case "--check-timeout":
+			value, err := requireOptionValue(flags, &index, argument)
+			if err != nil {
+				return options, err
+			}
+			parsed, err := parseCheckTimeout(value)
+			if err != nil {
+				return options, err
+			}
+			options.CheckTimeout = parsed
 		default:
 			if strings.HasPrefix(argument, "-") {
 				return options, fail("unknown resume option: %s", argument)
@@ -295,9 +302,7 @@ func parseResumeOptions(arguments []string) (resumeOptions, error) {
 func contextOptionValues(arguments []string, index *int, option string) ([]string, error) {
 	values := []string{}
 	for next := *index + 1; next < len(arguments) && !strings.HasPrefix(arguments[next], "-"); next++ {
-		for _, value := range strings.Fields(strings.ReplaceAll(arguments[next], ",", " ")) {
-			values = append(values, value)
-		}
+		values = append(values, strings.Fields(strings.ReplaceAll(arguments[next], ",", " "))...)
 		*index = next
 	}
 	if len(values) == 0 {

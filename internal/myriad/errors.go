@@ -15,11 +15,6 @@ func fail(format string, args ...any) error {
 	return &userError{message: fmt.Sprintf(format, args...)}
 }
 
-func isUserError(err error) bool {
-	var target *userError
-	return errors.As(err, &target)
-}
-
 type lockBusyError struct {
 	name string
 }

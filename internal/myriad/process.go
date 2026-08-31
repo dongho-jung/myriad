@@ -300,7 +300,3 @@ func closeDescriptors(descriptors []int) {
 		_ = unix.Close(descriptor)
 	}
 }
-
-func errorIsNoChildren(err error) bool {
-	return errors.Is(err, unix.ECHILD)
-}

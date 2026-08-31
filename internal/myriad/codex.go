@@ -500,7 +500,7 @@ func spawnCodexServer(command []string, environment []string) (*codexServer, err
 	if err != nil {
 		return nil, err
 	}
-	defer devnull.Close()
+	defer func() { _ = devnull.Close() }()
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Env = environment
 	cmd.Stdin = devnull
@@ -1104,16 +1104,16 @@ func provisionHook() error {
 	}
 	task, err := store.Load(taskID)
 	if err != nil {
-		lock.Unlock()
+		_ = lock.Unlock()
 		return err
 	}
 	if taskWorktreeReady(task) {
-		lock.Unlock()
+		_ = lock.Unlock()
 		return nil
 	}
 	owner, taskOwner := recordMap(session, "process"), recordMap(task, "process")
 	if owner == nil || taskOwner == nil || owner["pid"] != taskOwner["pid"] || owner["start"] != taskOwner["start"] || !processAlive(owner) {
-		lock.Unlock()
+		_ = lock.Unlock()
 		return fail("Codex provisioning hook no longer owns this task")
 	}
 	fallback := stringValue(task, "provisioning_slug")

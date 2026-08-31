@@ -106,7 +106,7 @@ func ensureMemory(store *Store, repository, currentBranch string) (string, Recor
 	if err != nil {
 		return "", nil, err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	tracked := []string{}
 	for _, name := range forbiddenLocalPaths {
 		probe, _ := gitCommand(root, false, "ls-files", "--error-unmatch", name)
@@ -301,7 +301,7 @@ func applyMemoryUpdate(store *Store, task Record) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	current, err := readMemory(canonicalPath)
 	if err != nil {
 		raw, _ := memoryBytes(proposed)

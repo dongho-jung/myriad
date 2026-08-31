@@ -115,7 +115,7 @@ func enqueueIntegrationNotice(store *Store, session, task Record) (string, error
 	if err != nil {
 		return "", err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	inbox, err := readSessionInbox(store, sessionID)
 	if err != nil {
 		return "", err
@@ -156,7 +156,7 @@ func pendingInboxMessages(store *Store, sessionID string, includeDelivered bool)
 	if err != nil {
 		return nil, err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	inbox, err := readSessionInbox(store, sessionID)
 	if err != nil {
 		return nil, err
@@ -189,7 +189,7 @@ func updateInboxEvent(store *Store, sessionID, eventID, status, detail string) (
 	if err != nil {
 		return nil, err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	inbox, err := readSessionInbox(store, sessionID)
 	if err != nil {
 		return nil, err
@@ -253,7 +253,7 @@ func acceptedHandoffTasks(store *Store, sessionID string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer lock.Unlock()
+	defer func() { _ = lock.Unlock() }()
 	inbox, err := readSessionInbox(store, sessionID)
 	if err != nil {
 		return nil, err

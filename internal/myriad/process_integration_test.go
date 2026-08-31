@@ -91,7 +91,7 @@ func TestSupervisorKeepsCheckoutLockedAfterLauncherDies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer output.Close()
+	defer func() { _ = output.Close() }()
 	command := exec.Command(myriad, "start", "--agent", "custom", "--task", "hold-checkout", "--quiet", "--", helper, "wait", ready, release)
 	command.Dir = repository
 	command.Env = os.Environ()

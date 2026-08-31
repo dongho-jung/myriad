@@ -26,7 +26,7 @@ func testCodexNameServer(t *testing.T, socketPath string) <-chan string {
 		if upgradeErr != nil {
 			return
 		}
-		defer connection.Close()
+		defer func() { _ = connection.Close() }()
 		for {
 			message := Record{}
 			if readErr := connection.ReadJSON(&message); readErr != nil {

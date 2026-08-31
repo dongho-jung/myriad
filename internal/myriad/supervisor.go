@@ -254,6 +254,6 @@ func terminalInboxAlert(sessionID string, count int) {
 		fmt.Fprint(os.Stderr, message)
 		return
 	}
-	defer terminal.Close()
+	defer func() { _ = terminal.Close() }()
 	_, _ = terminal.WriteString(message)
 }

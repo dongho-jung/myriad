@@ -26,7 +26,7 @@ func testCodexRecoveryServer(t *testing.T, socketPath, cwd string, missingRollou
 		if upgradeErr != nil {
 			return
 		}
-		defer connection.Close()
+		defer func() { _ = connection.Close() }()
 		for {
 			message := Record{}
 			if readErr := connection.ReadJSON(&message); readErr != nil {
