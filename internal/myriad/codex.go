@@ -493,6 +493,8 @@ func codexAppServerCommand(agentCommand []string, socketPath string, provisionHo
 type codexServer struct {
 	Command *exec.Cmd
 	Socket  string
+	done    chan struct{}
+	waitErr error
 }
 
 func spawnCodexServer(command []string, environment []string) (*codexServer, error) {
@@ -510,19 +512,35 @@ func spawnCodexServer(command []string, environment []string) (*codexServer, err
 	if err := cmd.Start(); err != nil {
 		return nil, fail("cannot start Codex App Server: %v", err)
 	}
-	return &codexServer{Command: cmd}, nil
+	server := &codexServer{Command: cmd, done: make(chan struct{})}
+	go func() {
+		server.waitErr = cmd.Wait()
+		close(server.done)
+	}()
+	return server, nil
+}
+
+func codexServerExited(server *codexServer) (bool, error) {
+	if server == nil || server.done == nil {
+		return false, nil
+	}
+	select {
+	case <-server.done:
+		return true, server.waitErr
+	default:
+		return false, nil
+	}
 }
 
 func waitForCodexServer(server *codexServer, socketPath string) error {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
+		if exited, err := codexServerExited(server); exited {
+			return fail("Codex App Server exited before opening its control socket (%v)", err)
+		}
 		if info, err := os.Stat(socketPath); err == nil && info.Mode()&os.ModeSocket != 0 {
 			server.Socket = socketPath
 			return nil
-		}
-		if processStart(server.Command.Process.Pid) == "" {
-			err := server.Command.Wait()
-			return fail("Codex App Server exited before opening its control socket (%v)", err)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -534,18 +552,27 @@ func stopCodexServer(server *codexServer, reap bool) {
 		return
 	}
 	pid := server.Command.Process.Pid
-	if processStart(pid) != "" {
+	exited, _ := codexServerExited(server)
+	if !exited {
 		_ = unix.Kill(-pid, unix.SIGTERM)
-		deadline := time.Now().Add(2 * time.Second)
-		for processStart(pid) != "" && time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
+		timer := time.NewTimer(2 * time.Second)
+		select {
+		case <-server.done:
+			exited = true
+		case <-timer.C:
 		}
-		if processStart(pid) != "" {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		if !exited {
 			_ = unix.Kill(-pid, unix.SIGKILL)
 		}
 	}
-	if reap {
-		_ = server.Command.Wait()
+	if reap && !exited && server.done != nil {
+		<-server.done
 	}
 	if server.Socket != "" {
 		_ = os.Remove(server.Socket)

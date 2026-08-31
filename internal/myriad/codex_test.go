@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -112,6 +113,33 @@ func TestCodexAppServerUnixTransport(t *testing.T) {
 	}
 	if len(anySlice(anyRecord(result)["data"])) == 0 {
 		t.Fatal("Codex App Server returned no models")
+	}
+}
+
+func TestWaitForCodexServerReturnsAfterEarlyExit(t *testing.T) {
+	server, err := spawnCodexServer([]string{"sh", "-c", "exit 7"}, os.Environ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err = waitForCodexServer(server, filepath.Join(t.TempDir(), "missing.sock"))
+	if err == nil || !strings.Contains(err.Error(), "exited before opening") {
+		t.Fatalf("unexpected App Server error: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("early App Server exit took %s to detect", elapsed)
+	}
+}
+
+func TestStopCodexServerReapsPromptly(t *testing.T) {
+	server, err := spawnCodexServer([]string{"sleep", "30"}, os.Environ())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	stopCodexServer(server, true)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("App Server shutdown took %s", elapsed)
 	}
 }
 
