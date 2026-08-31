@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -187,6 +188,7 @@ func TestFreshManagedCodexAppServerDoesNotResumeEmptyThread(t *testing.T) {
 		[]string{"codex", "--dangerously-bypass-approvals-and-sandbox"},
 		socketPath,
 		[]string{t.TempDir()},
+		t.TempDir(),
 		os.Environ(),
 	)
 	if err != nil {
@@ -307,7 +309,7 @@ func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
 			"-c", codexDirectStatusLine,
 			"--dangerously-bypass-approvals-and-sandbox",
 		},
-		"/tmp/control.sock", []string{"/project"}, codexManagedStatusLine,
+		"/tmp/control.sock", []string{"/project"}, codexManagedStatusLine, "/project",
 	)
 	joined := strings.Join(command, "\n")
 	if strings.Contains(joined, "tui.show_tooltips=true") {
@@ -316,7 +318,7 @@ func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
 	if count := strings.Count(joined, "tui.status_line="); count != 1 {
 		t.Fatalf("remote command has %d status line overrides: %#v", count, command)
 	}
-	for _, expected := range []string{"--remote", "unix:///tmp/control.sock", "tui.show_tooltips=false", codexManagedStatusLine} {
+	for _, expected := range []string{"--remote", "unix:///tmp/control.sock", "--cd", "/project", "tui.show_tooltips=false", codexManagedStatusLine} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("remote command is missing %q: %#v", expected, command)
 		}
@@ -326,12 +328,31 @@ func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
 	}
 }
 
+func TestCodexRemoteCommandKeepsExplicitWorkingDirectory(t *testing.T) {
+	command := codexRemoteCommand(
+		[]string{"codex", "--cd", "/selected"},
+		"/tmp/control.sock", []string{"/project"}, codexManagedStatusLine, "/project",
+	)
+	count := 0
+	for _, argument := range command {
+		if argument == "--cd" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("remote command has %d working directory flags: %#v", count, command)
+	}
+	if !slices.Contains(command, "/selected") {
+		t.Fatalf("remote command lost its explicit working directory: %#v", command)
+	}
+}
+
 func TestFreshManagedCodexStartsWithoutThreadTitle(t *testing.T) {
 	fresh := []string{"codex", "--dangerously-bypass-approvals-and-sandbox"}
 	if got := codexRemoteStatusLine(fresh, true); got != codexDirectStatusLine {
 		t.Fatalf("fresh managed status line = %q, want %q", got, codexDirectStatusLine)
 	}
-	command := codexRemoteCommand(fresh, "/tmp/control.sock", []string{"/project"}, codexRemoteStatusLine(fresh, true))
+	command := codexRemoteCommand(fresh, "/tmp/control.sock", []string{"/project"}, codexRemoteStatusLine(fresh, true), "/project")
 	if strings.Contains(strings.Join(command, "\n"), "thread-title") {
 		t.Fatalf("fresh managed command exposes an empty thread title: %#v", command)
 	}

@@ -53,7 +53,7 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 		provisionRequired := codexProvisionHookRequired()
 		server, transformed, startErr := startCodexAppServer(
 			store, command, controlSocket,
-			[]string{currentDirectory(), workingDirectory}, os.Environ(),
+			[]string{currentDirectory(), workingDirectory}, workingDirectory, os.Environ(),
 		)
 		if startErr != nil {
 			_ = updateSessionMetadata(sessionPath, sessionID, Record{"control_status": "unavailable", "control_error": startErr.Error()})

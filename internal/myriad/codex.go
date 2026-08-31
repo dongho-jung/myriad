@@ -362,7 +362,29 @@ func codexRemoteStatusLine(command []string, provisionHook bool) string {
 	return codexManagedStatusLine
 }
 
-func codexRemoteCommand(command []string, socketPath string, trustedDirectories []string, statusLine string) []string {
+func codexHasWorkingDirectory(command []string, executable int) bool {
+	for index := executable + 1; index < len(command); {
+		value := command[index]
+		if value == "--" {
+			return false
+		}
+		if value == "-C" || value == "--cd" || strings.HasPrefix(value, "--cd=") || (len(value) > 2 && strings.HasPrefix(value, "-C")) {
+			return true
+		}
+		if codexGlobalValueOptions[value] {
+			index += 2
+			continue
+		}
+		if strings.HasPrefix(value, "-") {
+			index++
+			continue
+		}
+		return false
+	}
+	return false
+}
+
+func codexRemoteCommand(command []string, socketPath string, trustedDirectories []string, statusLine, workingDirectory string) []string {
 	executable := commandExecutableIndex(command, "codex")
 	subcommand := codexSubcommand(command)
 	if executable < 0 || (subcommand != "" && subcommand != "resume" && subcommand != "fork") {
@@ -374,10 +396,15 @@ func codexRemoteCommand(command []string, socketPath string, trustedDirectories 
 	result := stripManagedCodexTUIConfigs(command, executable)
 	addition := []string{
 		"--remote", "unix://" + socketPath,
+	}
+	if !codexHasWorkingDirectory(result, executable) {
+		addition = append(addition, "--cd", workingDirectory)
+	}
+	addition = append(addition,
 		"-c", codexTrustedProjectsConfig(trustedDirectories),
 		"-c", "tui.show_tooltips=false",
 		"-c", statusLine,
-	}
+	)
 	return append(result[:executable+1], append(addition, result[executable+1:]...)...)
 }
 
@@ -819,13 +846,13 @@ func resumableCodexThread(socketPath, workingDirectory string) (string, string, 
 	return threadID, effort, err
 }
 
-func startCodexAppServer(store *Store, command []string, socketPath string, trustedDirectories []string, environment []string) (*codexServer, []string, error) {
+func startCodexAppServer(store *Store, command []string, socketPath string, trustedDirectories []string, workingDirectory string, environment []string) (*codexServer, []string, error) {
 	agentCommand, recoveryDirectory, err := unmarkCodexRecoveryCommand(command)
 	if err != nil {
 		return nil, nil, err
 	}
 	provisionHook := codexProvisionHookRequired()
-	remoteCommand := codexRemoteCommand(agentCommand, socketPath, trustedDirectories, codexRemoteStatusLine(agentCommand, provisionHook))
+	remoteCommand := codexRemoteCommand(agentCommand, socketPath, trustedDirectories, codexRemoteStatusLine(agentCommand, provisionHook), workingDirectory)
 	if remoteCommand == nil {
 		return nil, command, nil
 	}

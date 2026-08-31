@@ -72,7 +72,7 @@ func FuzzCommandInterpretation(f *testing.F) {
 		if executable >= 0 {
 			_ = stripManagedCodexTUIConfigs(command, executable)
 		}
-		_ = codexRemoteCommand(command, "/tmp/myriad-fuzz.sock", []string{"/tmp/myriad-fuzz"}, codexManagedStatusLine)
+		_ = codexRemoteCommand(command, "/tmp/myriad-fuzz.sock", []string{"/tmp/myriad-fuzz"}, codexManagedStatusLine, "/tmp/myriad-fuzz")
 
 		if !slices.Equal(command, original) {
 			t.Fatalf("command interpretation mutated its input: %#v became %#v", original, command)
