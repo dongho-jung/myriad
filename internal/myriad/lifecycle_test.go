@@ -184,6 +184,32 @@ func TestRecordedOrphanRemainsManageable(t *testing.T) {
 	}
 }
 
+func TestWorktreePruneHonorsRepositoryActivity(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	activity, err := store.RepositoryActivityLock(repository, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pruned, err := pruneRepositoryWorktrees(store, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned {
+		t.Fatal("worktree pruning ran while repository activity was leased")
+	}
+	if err := activity.Unlock(); err != nil {
+		t.Fatal(err)
+	}
+	pruned, err = pruneRepositoryWorktrees(store, repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pruned {
+		t.Fatal("worktree pruning did not run after repository activity was released")
+	}
+}
+
 func TestTaskIntegratesFastForwardAndCleansUp(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)

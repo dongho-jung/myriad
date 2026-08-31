@@ -826,6 +826,19 @@ func recordOrphans(store *Store) {
 	}
 }
 
+func pruneRepositoryWorktrees(store *Store, repository string) (bool, error) {
+	activity, err := store.RepositoryActivityLock(repository, true, false)
+	if err != nil {
+		if isLockBusy(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer func() { _ = activity.Unlock() }()
+	_, err = gitCommand(repository, true, "worktree", "prune")
+	return true, err
+}
+
 func reconcileOne(store *Store, task Record, integrate bool) error {
 	if processAlive(task["process"]) || processAlive(task["integration_process"]) {
 		return nil
@@ -930,7 +943,10 @@ func reconcile(store *Store, integrate, quiet bool) int {
 	}
 	for repository := range repositories {
 		if info, err := os.Stat(repository); err == nil && info.IsDir() {
-			_, _ = gitCommand(repository, false, "worktree", "prune")
+			if _, pruneErr := pruneRepositoryWorktrees(store, repository); pruneErr != nil {
+				failed = true
+				fmt.Fprintf(os.Stderr, "myriad: prune worktrees in %s: %v\n", repository, pruneErr)
+			}
 		}
 	}
 	recovery := 0
