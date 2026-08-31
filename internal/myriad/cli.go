@@ -173,6 +173,17 @@ func requireOptionValue(arguments []string, index *int, option string) (string, 
 	return arguments[*index], nil
 }
 
+func parseCheckTimeout(value string) (float64, error) {
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fail("--check-timeout must be a finite positive number of seconds")
+	}
+	if _, ok := durationFromSeconds(parsed); !ok {
+		return 0, fail("--check-timeout must be a finite positive number of seconds")
+	}
+	return parsed, nil
+}
+
 func parseLaunchOptions(arguments []string) (launchOptions, error) {
 	options := launchOptions{Agent: "codex", CheckTimeout: defaultCheckTimeout.Seconds(), LaunchCWD: currentDirectory()}
 	flags, command := splitCommand(arguments)
@@ -197,9 +208,9 @@ func parseLaunchOptions(arguments []string) (launchOptions, error) {
 			case "--check":
 				options.Checks = append(options.Checks, value)
 			case "--check-timeout":
-				parsed, err := strconv.ParseFloat(value, 64)
-				if err != nil || parsed <= 0 {
-					return options, fail("--check-timeout must be greater than zero")
+				parsed, err := parseCheckTimeout(value)
+				if err != nil {
+					return options, err
 				}
 				options.CheckTimeout = parsed
 			case "--task":
@@ -262,9 +273,9 @@ func parseResumeOptions(arguments []string) (resumeOptions, error) {
 			} else if argument == "--check" {
 				options.Checks = append(options.Checks, value)
 			} else {
-				parsed, err := strconv.ParseFloat(value, 64)
-				if err != nil || parsed <= 0 {
-					return options, fail("--check-timeout must be greater than zero")
+				parsed, err := parseCheckTimeout(value)
+				if err != nil {
+					return options, err
 				}
 				options.CheckTimeout = parsed
 			}

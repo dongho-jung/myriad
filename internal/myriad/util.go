@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -329,4 +330,16 @@ func platformSupported() error {
 		return fail("Myriad process supervision currently requires Linux")
 	}
 	return nil
+}
+
+func durationFromSeconds(seconds float64) (time.Duration, bool) {
+	if seconds <= 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
+		return 0, false
+	}
+	maximum := float64(time.Duration(1<<63-1)) / float64(time.Second)
+	if seconds > maximum {
+		return 0, false
+	}
+	duration := time.Duration(seconds * float64(time.Second))
+	return duration, duration > 0
 }

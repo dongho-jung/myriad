@@ -156,9 +156,14 @@ func validateCandidate(store *Store, task Record, candidate, targetSHA, expected
 		} else if parsed, ok := task["check_timeout_seconds"].(float64); ok && parsed > 0 {
 			timeoutSeconds = parsed
 		}
+		timeout, ok := durationFromSeconds(timeoutSeconds)
+		if !ok {
+			timeout = defaultCheckTimeout
+			timeoutSeconds = timeout.Seconds()
+		}
 		waitErr, timedOut := runValidationProcess(
 			command, directories[index], taskEnvironment(candidateTask),
-			time.Duration(timeoutSeconds*float64(time.Second)),
+			timeout,
 			func(owner Record) {
 				if owner != nil {
 					task["validation_process"] = owner
