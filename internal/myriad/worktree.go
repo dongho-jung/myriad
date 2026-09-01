@@ -672,6 +672,9 @@ func inspectResult(store *Store, task Record, trustCleanCommit bool) error {
 		}
 	}
 	head := currentHead(task)
+	if _, err := adoptPreparedReplay(task, head); err != nil {
+		return setStatus(store, task, StatusRecovery, "prepared replay result is invalid: "+err.Error())
+	}
 	if head == "" || head == stringValue(task, "base_sha") {
 		if worktreeExists {
 			if err := captureMemoryProposal(store, task); err != nil {

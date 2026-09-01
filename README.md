@@ -83,6 +83,15 @@ An integration blocked by an active repository session remains queued and is
 retried automatically after that session exits. Myriad does not interrupt the
 foreground agent or request a handoff merely to advance the target sooner.
 
+`myriad publish` replays non-conflicting committed work onto an advanced target
+without operator involvement. If that replay has a content conflict, Myriad
+prepares the same history-safe replay directly in the active managed worktree
+and tells the agent which paths need judgment. The agent can resolve and add
+those paths and rerun `myriad publish`; Myriad continues the prepared rebase and
+reports the next conflict, if any. The target remains unchanged until the
+completed replay passes validation and the normal publish checks. Rewritten
+target history is not reintroduced by a merge commit.
+
 Task records retain bounded lifecycle, integration, publish, and validation
 histories. Validation entries include the command, process identity, outcome,
 timeout state, and bounded stdout/stderr tails. `myriad diagnose TASK_ID`

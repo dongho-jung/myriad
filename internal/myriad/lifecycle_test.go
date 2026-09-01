@@ -402,8 +402,8 @@ func TestRecoveryPreparationHonorsCheckoutLease(t *testing.T) {
 	store := testStore(t)
 	task := testTask(t, store, repository, createTaskOptions{})
 	worktree := stringValue(task, "worktree_path")
-	testCommitFile(t, worktree, "task.txt", "task\n", "fix: preserve task work")
-	testCommitFile(t, repository, "target.txt", "target\n", "feat: advance target")
+	result := testCommitFile(t, worktree, "task.txt", "task\n", "fix: preserve task work")
+	target := testCommitFile(t, repository, "target.txt", "target\n", "feat: advance target")
 	task["status"] = StatusRecovery
 	delete(task, "process")
 	if err := store.Save(task); err != nil {
@@ -422,14 +422,14 @@ func TestRecoveryPreparationHonorsCheckoutLease(t *testing.T) {
 		_ = lease.Unlock()
 		t.Fatalf("recovery preparation ignored checkout lease: %v", err)
 	}
-	mergeHead, err := gitCommand(worktree, false, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	head, err := gitRef(worktree, "HEAD")
 	if err != nil {
 		_ = lease.Unlock()
 		t.Fatal(err)
 	}
-	if mergeHead.ExitCode == 0 {
+	if head != result {
 		_ = lease.Unlock()
-		t.Fatal("recovery mutated the worktree while its lease was held")
+		t.Fatalf("recovery mutated the worktree while its lease was held: %s", head)
 	}
 	if err := lease.Unlock(); err != nil {
 		t.Fatal(err)
@@ -439,12 +439,22 @@ func TestRecoveryPreparationHonorsCheckoutLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(note, "staged the current target merge") {
+	if !strings.Contains(note, "replayed the task onto the current target") {
 		t.Fatalf("unexpected recovery note: %s", note)
 	}
-	mergeHead, err = gitCommand(worktree, false, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
-	if err != nil || mergeHead.ExitCode != 0 {
-		t.Fatalf("recovery did not stage the target merge: (%v, %d)", err, mergeHead.ExitCode)
+	head, err = gitRef(worktree, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head == result || !isAncestor(repository, target, head) {
+		t.Fatalf("recovery did not replay %s onto %s: %s", result, target, head)
+	}
+	note, err = prepareRecoveryCheckout(store, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, "already contains the current target") {
+		t.Fatalf("repeated recovery lost replay guidance: %s", note)
 	}
 }
 
@@ -879,12 +889,15 @@ func TestPublishRebasesActiveTaskOntoRewrittenTarget(t *testing.T) {
 	}
 }
 
-func TestPublishFailureRetainsDiagnostic(t *testing.T) {
+func TestPublishConflictPreparesAgentResolution(t *testing.T) {
 	repository := testRepository(t)
+	oldBase := testCommitFile(t, repository, "old-base.txt", "old base\n", "feat: add superseded base")
 	store := testStore(t)
 	task := testTask(t, store, repository, createTaskOptions{})
-	testCommitFile(t, stringValue(task, "worktree_path"), "tracked.txt", "task\n", "fix: update task copy")
-	testCommitFile(t, repository, "tracked.txt", "target\n", "fix: update target copy")
+	worktree := stringValue(task, "worktree_path")
+	result := testCommitFile(t, worktree, "tracked.txt", "task\n", "fix: update task copy")
+	testCommand(t, repository, "git", "reset", "--hard", "-q", oldBase+"^")
+	target := testCommitFile(t, repository, "tracked.txt", "target\n", "fix: update target copy")
 	task["status"] = StatusRunning
 	task["process"] = processRecord(os.Getpid(), "agent", 0)
 	if err := store.Save(task); err != nil {
@@ -893,22 +906,152 @@ func TestPublishFailureRetainsDiagnostic(t *testing.T) {
 
 	if _, err := publishTaskCheckpoint(store, task); err == nil {
 		t.Fatal("conflicting publish unexpectedly succeeded")
+	} else if !strings.Contains(err.Error(), "needs agent conflict resolution") || !strings.Contains(err.Error(), "rerun myriad publish") {
+		t.Fatalf("publish did not give actionable conflict guidance: %v", err)
+	}
+	if head, _ := gitRef(repository, "refs/heads/main"); head != target {
+		t.Fatalf("conflicting publish changed target to %s, want %s", head, target)
+	}
+	if rebaseHead, err := gitRef(worktree, "REBASE_HEAD"); err != nil || rebaseHead != result {
+		t.Fatalf("publish did not prepare the task replay: head=%s err=%v", rebaseHead, err)
+	}
+	conflicts, err := unmergedPaths(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conflicts) != 1 || conflicts[0] != "tracked.txt" {
+		t.Fatalf("prepared conflicts = %v, want tracked.txt", conflicts)
+	}
+	note, err := prepareRecovery(store, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, "target replay is already in progress") {
+		t.Fatalf("recovery lost prepared conflict guidance: %s", note)
 	}
 	current, err := store.Load(stringValue(task, "task_id"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	diagnostic := recordMap(current, "last_publish_diagnostic")
-	if stringValue(diagnostic, "outcome") != "failed" || !strings.Contains(stringValue(diagnostic, "reason"), "conflict") {
+	paths := recordSlice(diagnostic, "conflict_paths")
+	if stringValue(diagnostic, "outcome") != "failed" ||
+		!boolValue(diagnostic, "prepared_target_replay", false) ||
+		stringValue(diagnostic, "prepared_target_sha") != target ||
+		len(paths) != 1 || paths[0] != "tracked.txt" {
 		t.Fatalf("failed publish diagnostic was not retained: %s", describe(diagnostic))
+	}
+
+	if err := os.WriteFile(filepath.Join(worktree, "tracked.txt"), []byte("resolved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testCommand(t, worktree, "git", "add", "tracked.txt")
+	if _, err := publishTaskCheckpoint(store, task); err == nil || !strings.Contains(err.Error(), "validate the resolved result") {
+		t.Fatalf("completed replay did not stop for validation: %v", err)
+	}
+	if head, _ := gitRef(repository, "refs/heads/main"); head != target {
+		t.Fatalf("unvalidated replay changed target to %s, want %s", head, target)
+	}
+	resolved, err := gitRef(worktree, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parents := strings.Fields(testCommand(t, worktree, "git", "rev-list", "--parents", "-n", "1", resolved))
+	if len(parents) != 2 || parents[1] != target {
+		t.Fatalf("resolved replay parents = %v, want only %s", parents, target)
+	}
+	if isAncestor(repository, result, resolved) || isAncestor(repository, oldBase, resolved) {
+		t.Fatal("resolved replay restored the superseded task or base history")
+	}
+	if _, err := os.Stat(filepath.Join(worktree, "old-base.txt")); !os.IsNotExist(err) {
+		t.Fatalf("resolved replay restored superseded base content: %v", err)
+	}
+	published, err := publishTaskCheckpoint(store, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(published, "strategy") != "fast-forward" || stringValue(published, "published_commit") != resolved {
+		t.Fatalf("resolved publish = %s", describe(published))
+	}
+	if head, _ := gitRef(repository, "refs/heads/main"); head != resolved {
+		t.Fatalf("resolved publish left target at %s, want %s", head, resolved)
+	}
+	current, err = store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(current, "base_sha") != target ||
+		stringValue(current, "result_commit") != resolved ||
+		recordMap(current, "prepared_replay") != nil {
+		t.Fatalf("resolved replay metadata was not adopted: %s", describe(current))
 	}
 }
 
-func TestTaskRebaseConflictPreservesTarget(t *testing.T) {
+func TestPublishContinuesPreparedReplayAcrossConflicts(t *testing.T) {
+	repository := testRepository(t)
+	testCommitFile(t, repository, "first.txt", "base\n", "test: add first base")
+	testCommitFile(t, repository, "second.txt", "base\n", "test: add second base")
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	worktree := stringValue(task, "worktree_path")
+	firstResult := testCommitFile(t, worktree, "first.txt", "task first\n", "fix: update first task copy")
+	secondResult := testCommitFile(t, worktree, "second.txt", "task second\n", "fix: update second task copy")
+	testCommitFile(t, repository, "first.txt", "target first\n", "fix: update first target copy")
+	target := testCommitFile(t, repository, "second.txt", "target second\n", "fix: update second target copy")
+	task["status"] = StatusRunning
+	task["process"] = processRecord(os.Getpid(), "agent", 0)
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := publishTaskCheckpoint(store, task); err == nil || !strings.Contains(err.Error(), "first.txt") {
+		t.Fatalf("first prepared conflict = %v", err)
+	}
+	if rebaseHead, err := gitRef(worktree, "REBASE_HEAD"); err != nil || rebaseHead != firstResult {
+		t.Fatalf("first replay head = %s, err = %v", rebaseHead, err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "first.txt"), []byte("resolved first\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testCommand(t, worktree, "git", "add", "first.txt")
+	if _, err := publishTaskCheckpoint(store, task); err == nil || !strings.Contains(err.Error(), "second.txt") {
+		t.Fatalf("second prepared conflict = %v", err)
+	}
+	if head, _ := gitRef(repository, "refs/heads/main"); head != target {
+		t.Fatalf("intermediate replay changed target to %s, want %s", head, target)
+	}
+	if rebaseHead, err := gitRef(worktree, "REBASE_HEAD"); err != nil || rebaseHead != secondResult {
+		t.Fatalf("second replay head = %s, err = %v", rebaseHead, err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "second.txt"), []byte("resolved second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testCommand(t, worktree, "git", "add", "second.txt")
+	if _, err := publishTaskCheckpoint(store, task); err == nil || !strings.Contains(err.Error(), "validate the resolved result") {
+		t.Fatalf("completed multi-conflict replay did not stop for validation: %v", err)
+	}
+	resolved, err := gitRef(worktree, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	published, err := publishTaskCheckpoint(store, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(published, "published_commit") != resolved {
+		t.Fatalf("completed replay = %s, want %s", describe(published), resolved)
+	}
+	if merges := strings.TrimSpace(testCommand(t, repository, "git", "rev-list", "--merges", target+".."+resolved)); merges != "" {
+		t.Fatalf("prepared replay introduced merge commits: %s", merges)
+	}
+}
+
+func TestTaskRebaseConflictPreparesRecoveryReplay(t *testing.T) {
 	repository := testRepository(t)
 	store := testStore(t)
 	task := testTask(t, store, repository, createTaskOptions{})
-	result := testCommitFile(t, stringValue(task, "worktree_path"), "tracked.txt", "task\n", "fix: change task copy")
+	worktree := stringValue(task, "worktree_path")
+	result := testCommitFile(t, worktree, "tracked.txt", "task\n", "fix: change task copy")
 	target := testCommitFile(t, repository, "tracked.txt", "target\n", "fix: change target copy")
 
 	current := finishTestTask(t, store, task, true)
@@ -923,6 +1066,39 @@ func TestTaskRebaseConflictPreservesTarget(t *testing.T) {
 	}
 	if stringValue(current, "result_commit") != result {
 		t.Fatal("conflicting task result was not preserved")
+	}
+
+	note, err := prepareRecoveryCheckout(store, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(note, "prepared a replay onto the current target") {
+		t.Fatalf("recovery did not prepare agent resolution: %s", note)
+	}
+	if rebaseHead, err := gitRef(worktree, "REBASE_HEAD"); err != nil || rebaseHead != result {
+		t.Fatalf("recovery replay head = %s, err = %v", rebaseHead, err)
+	}
+	current["status"] = StatusRunning
+	current["process"] = processRecord(os.Getpid(), "agent", 0)
+	if err := store.Save(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "tracked.txt"), []byte("resolved\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	testCommand(t, worktree, "git", "add", "tracked.txt")
+	if _, err := publishTaskCheckpoint(store, current); err == nil || !strings.Contains(err.Error(), "validate the resolved result") {
+		t.Fatalf("completed recovery replay did not stop for validation: %v", err)
+	}
+	if head, _ := gitRef(repository, "refs/heads/main"); head != target {
+		t.Fatalf("unvalidated recovery changed target to %s, want %s", head, target)
+	}
+	published, err := publishTaskCheckpoint(store, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head, _ := gitRef(repository, "refs/heads/main"); head != stringValue(published, "published_commit") || head == target {
+		t.Fatalf("resolved recovery did not advance target: %s", head)
 	}
 }
 

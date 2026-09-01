@@ -394,11 +394,11 @@ func rebaseIntegrationResult(path, targetSHA, base string) (string, bool, error)
 		return "", false, err
 	}
 	if rebased.ExitCode != 0 {
-		conflicts, conflictErr := gitCommand(path, true, "diff", "--name-only", "--diff-filter=U")
+		conflicts, conflictErr := unmergedPaths(path)
 		if conflictErr != nil {
 			return "", false, conflictErr
 		}
-		if strings.TrimSpace(conflicts.Stdout) != "" {
+		if len(conflicts) > 0 {
 			return "", true, nil
 		}
 		detail := strings.TrimSpace(rebased.Stderr + rebased.Stdout)
@@ -436,6 +436,118 @@ func publishReplayBase(repository string, task Record, resultCommit, targetSHA s
 		}
 	}
 	return base, nil
+}
+
+func prepareTargetReplay(store *Store, task Record, path, target, targetSHA, replayBase, resultCommit string) (string, bool, []string, error) {
+	task["prepared_replay"] = Record{
+		"started_at": now(), "target_branch": target, "target_sha": targetSHA,
+		"replay_base_sha": replayBase, "result_commit": resultCommit,
+	}
+	if err := store.Save(task); err != nil {
+		delete(task, "prepared_replay")
+		return "", false, nil, err
+	}
+	head, conflicted, err := rebaseIntegrationResult(path, targetSHA, replayBase)
+	if err != nil {
+		_, _ = gitCommand(path, false, "-c", "core.hooksPath=/dev/null", "rebase", "--abort")
+		delete(task, "prepared_replay")
+		if saveErr := store.Save(task); saveErr != nil {
+			return "", false, nil, errors.Join(err, saveErr)
+		}
+		return "", false, nil, err
+	}
+	if !conflicted {
+		return head, false, nil, nil
+	}
+	conflicts, conflictErr := unmergedPaths(path)
+	if conflictErr != nil {
+		return "", true, nil, conflictErr
+	}
+	return "", true, conflicts, nil
+}
+
+func continuePreparedReplay(path string) (bool, []string, error) {
+	rebaseHead, err := gitCommand(path, false, "rev-parse", "--verify", "--quiet", "REBASE_HEAD")
+	if err != nil {
+		return false, nil, err
+	}
+	if rebaseHead.ExitCode == 1 {
+		return true, nil, nil
+	}
+	if rebaseHead.ExitCode != 0 {
+		return false, nil, fail("cannot inspect prepared replay state")
+	}
+	conflicts, err := unmergedPaths(path)
+	if err != nil {
+		return false, nil, err
+	}
+	if len(conflicts) > 0 {
+		return false, conflicts, nil
+	}
+	continued, err := gitCommand(
+		path, false,
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "commit.gpgSign=false",
+		"-c", "core.editor=true",
+		"-c", "rerere.enabled=false",
+		"rebase", "--continue",
+	)
+	if err != nil {
+		return false, nil, err
+	}
+	if continued.ExitCode == 0 {
+		return true, nil, nil
+	}
+	conflicts, conflictErr := unmergedPaths(path)
+	if conflictErr != nil {
+		return false, nil, conflictErr
+	}
+	if len(conflicts) > 0 {
+		return false, conflicts, nil
+	}
+	detail := strings.TrimSpace(continued.Stderr + continued.Stdout)
+	return false, nil, fail("cannot continue prepared replay: %s", firstNonempty(detail, fmt.Sprintf("git rebase --continue exited with %d", continued.ExitCode)))
+}
+
+func preparedReplayConflictError(target, targetSHA string, conflicts []string) error {
+	visible := conflicts[:min(20, len(conflicts))]
+	suffix := ""
+	if len(conflicts) > len(visible) {
+		suffix = fmt.Sprintf(" and %d more", len(conflicts)-len(visible))
+	}
+	return fail(
+		"publish needs agent conflict resolution: Myriad prepared a replay onto %s@%.12s in the active worktree; resolve and git add only these paths: %s%s; rerun myriad publish so Myriad can continue the replay",
+		target, targetSHA, describe(visible), suffix,
+	)
+}
+
+func adoptPreparedReplay(task Record, head string) (bool, error) {
+	prepared := recordMap(task, "prepared_replay")
+	if prepared == nil {
+		return false, nil
+	}
+	original := stringValue(prepared, "result_commit")
+	if original != "" && head == original {
+		delete(task, "prepared_replay")
+		return true, nil
+	}
+	targetSHA := stringValue(prepared, "target_sha")
+	if targetSHA == "" {
+		return false, fail("prepared replay has no recorded target")
+	}
+	descends, err := isAncestorChecked(stringValue(task, "repository"), targetSHA, head)
+	if err != nil {
+		return false, err
+	}
+	if !descends {
+		return false, fail("resolved replay does not descend from its prepared target")
+	}
+	task["base_sha"] = targetSHA
+	task["result_commit"] = head
+	task["resolved_replay_from_base"] = stringValue(prepared, "replay_base_sha")
+	task["resolved_replay_target"] = targetSHA
+	delete(task, "prepared_replay")
+	return true, nil
 }
 
 func createIntegrationCandidate(repository string, task Record, targetSHA, resultCommit, candidate string) (string, string, error) {
@@ -904,6 +1016,46 @@ func publishTaskCheckpoint(store *Store, task Record) (published Record, resultE
 	if err != nil {
 		return nil, err
 	}
+	publishLock, err := store.Lock("publish:"+stringValue(task, "task_id"), false)
+	if err != nil {
+		return nil, fail("another publish or integration is running")
+	}
+	defer func() { _ = publishLock.Unlock() }()
+	if prepared := recordMap(task, "prepared_replay"); prepared != nil {
+		completed, conflicts, continueErr := continuePreparedReplay(path)
+		if continueErr != nil {
+			return nil, continueErr
+		}
+		preparedTarget := firstNonempty(stringValue(prepared, "target_branch"), stringValue(task, "target_branch"))
+		preparedTargetSHA := stringValue(prepared, "target_sha")
+		diagnostic["prepared_target_replay"] = true
+		diagnostic["prepared_target_sha"] = preparedTargetSHA
+		if !completed {
+			diagnostic["conflict_paths"] = stringsToAny(conflicts)
+			return nil, preparedReplayConflictError(preparedTarget, preparedTargetSHA, conflicts)
+		}
+		diagnostic["continued_prepared_replay"] = true
+		replayedHead, headErr := gitRef(path, "HEAD")
+		if headErr != nil {
+			return nil, headErr
+		}
+		originalResult := stringValue(prepared, "result_commit")
+		if _, adoptErr := adoptPreparedReplay(task, replayedHead); adoptErr != nil {
+			return nil, adoptErr
+		}
+		if saveErr := store.Save(task); saveErr != nil {
+			return nil, saveErr
+		}
+		if replayedHead != originalResult {
+			diagnostic["adopted_prepared_replay"] = true
+			diagnostic["base_sha"] = stringValue(task, "base_sha")
+			return nil, fail(
+				"Myriad completed the prepared replay onto %s@%.12s; validate the resolved result, then rerun myriad publish",
+				preparedTarget, preparedTargetSHA,
+			)
+		}
+		diagnostic["aborted_prepared_replay"] = true
+	}
 	changes, err := worktreeChanges(path)
 	if err != nil {
 		return nil, err
@@ -921,6 +1073,14 @@ func publishTaskCheckpoint(store *Store, task Record) (published Record, resultE
 	resultCommit, err := gitRef(path, "HEAD")
 	if err != nil {
 		return nil, err
+	}
+	adoptedReplay, err := adoptPreparedReplay(task, resultCommit)
+	if err != nil {
+		return nil, err
+	}
+	if adoptedReplay {
+		diagnostic["adopted_prepared_replay"] = true
+		diagnostic["base_sha"] = stringValue(task, "base_sha")
 	}
 	diagnostic["result_commit_before"] = resultCommit
 	base := stringValue(task, "base_sha")
@@ -952,11 +1112,6 @@ func publishTaskCheckpoint(store *Store, task Record) (published Record, resultE
 	}
 	candidate := filepath.Join(store.Integrations, key, stringValue(task, "task_id")+"-publish")
 	defer removeIntegrationWorktree(repository, candidate)
-	publishLock, err := store.Lock("publish:"+stringValue(task, "task_id"), false)
-	if err != nil {
-		return nil, fail("another publish or integration is running")
-	}
-	defer func() { _ = publishLock.Unlock() }()
 	integrationLock, err := store.Lock("integrate:"+stringValue(task, "git_common_dir")+":"+target, false)
 	if err != nil {
 		return nil, fail("another publish or integration is running")
@@ -1042,11 +1197,41 @@ func publishTaskCheckpoint(store *Store, task Record) (published Record, resultE
 	if err != nil {
 		return nil, err
 	}
+	diagnostic["strategy"] = strategy
 	if candidateHead == "" {
-		return nil, fail("publish candidate conflicts with the current target")
+		current, currentErr := gitRef(path, "HEAD")
+		if currentErr != nil {
+			return nil, currentErr
+		}
+		currentChanges, changesErr := worktreeChanges(path)
+		if changesErr != nil {
+			return nil, changesErr
+		}
+		if current != resultCommit || len(currentChanges.Normal) > 0 {
+			return nil, fail("task worktree changed while publish was preparing conflict resolution")
+		}
+		replayedHead, conflicted, conflicts, replayErr := prepareTargetReplay(store, task, path, target, targetSHA, replayBase, resultCommit)
+		if replayErr != nil {
+			return nil, replayErr
+		}
+		diagnostic["prepared_target_replay"] = true
+		diagnostic["prepared_target_sha"] = targetSHA
+		if !conflicted {
+			if _, adoptErr := adoptPreparedReplay(task, replayedHead); adoptErr != nil {
+				return nil, adoptErr
+			}
+			return nil, fail(
+				"publish replay changed while preparing agent resolution: Myriad replayed the task onto %s@%.12s; validate and rerun myriad publish",
+				target, targetSHA,
+			)
+		}
+		if len(conflicts) > 0 {
+			diagnostic["conflict_paths"] = stringsToAny(conflicts)
+			return nil, preparedReplayConflictError(target, targetSHA, conflicts)
+		}
+		return nil, fail("publish replay stopped without reporting conflicted paths")
 	}
 	diagnostic["candidate_commit"] = candidateHead
-	diagnostic["strategy"] = strategy
 	valid, validationErr := validateCandidate(store, task, candidate, targetSHA, candidateHead)
 	if validationErr != nil {
 		return nil, validationErr

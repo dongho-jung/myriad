@@ -239,7 +239,21 @@ func recoveryTaskTitle(task Record) string {
 	return "untitled recovery"
 }
 
-func prepareRecovery(task Record) (string, error) {
+func unmergedPaths(path string) ([]string, error) {
+	conflicts, err := gitCommand(path, true, "diff", "--name-only", "-z", "--diff-filter=U")
+	if err != nil {
+		return nil, err
+	}
+	paths := []string{}
+	for _, path := range strings.Split(conflicts.Stdout, "\x00") {
+		if path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths, nil
+}
+
+func prepareRecovery(store *Store, task Record) (string, error) {
 	notes := []string{}
 	quarantines := recordSlice(task, "worktree_quarantines")
 	if len(quarantines) > 0 {
@@ -281,6 +295,44 @@ func prepareRecovery(task Record) (string, error) {
 	if len(findings) > 0 {
 		notes = append(notes, "Rewrite unpublished commits so these machine-local paths never appear in history: "+strings.Join(findingPaths(findings), ", ")+".")
 	}
+	rebaseHead, err := gitCommand(path, false, "rev-parse", "--verify", "--quiet", "REBASE_HEAD")
+	if err != nil {
+		return "", err
+	}
+	if rebaseHead.ExitCode == 0 {
+		conflicts, conflictErr := unmergedPaths(path)
+		if conflictErr != nil {
+			return "", conflictErr
+		}
+		if len(conflicts) > 0 {
+			notes = append(notes, "A Myriad target replay is already in progress. Resolve only those conflicts, add them, and rerun myriad publish so Myriad can continue; repeat if another conflict appears.")
+		} else {
+			notes = append(notes, "A Myriad target replay is waiting to continue. Rerun myriad publish so Myriad can continue it.")
+		}
+		return strings.Join(notes, " "), nil
+	}
+	if rebaseHead.ExitCode != 1 {
+		return "", fail("cannot inspect recovery replay state")
+	}
+	mergeHead, err := gitCommand(path, false, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
+	if err != nil {
+		return "", err
+	}
+	if mergeHead.ExitCode == 0 {
+		conflicts, conflictErr := unmergedPaths(path)
+		if conflictErr != nil {
+			return "", conflictErr
+		}
+		if len(conflicts) > 0 {
+			notes = append(notes, "A target merge is already in progress. Resolve only those conflicts, validate, and commit.")
+		} else {
+			notes = append(notes, "A target merge is already staged. Validate and commit it.")
+		}
+		return strings.Join(notes, " "), nil
+	}
+	if mergeHead.ExitCode != 1 {
+		return "", fail("cannot inspect recovery merge state")
+	}
 	if stringValue(task, "interrupted_at") != "" {
 		notes = append(notes, "Resume the interrupted session and continue from its preserved files and commits.")
 		return strings.Join(notes, " "), nil
@@ -297,16 +349,8 @@ func prepareRecovery(task Record) (string, error) {
 		notes = append(notes, "The target branch "+target+" no longer exists; repair the task metadata first.")
 		return strings.Join(notes, " "), nil
 	}
-	mergeHead, err := gitCommand(path, false, "rev-parse", "--verify", "--quiet", "MERGE_HEAD")
-	if err != nil {
+	if _, err := adoptPreparedReplay(task, head); err != nil {
 		return "", err
-	}
-	if mergeHead.ExitCode == 0 {
-		notes = append(notes, "A target merge is already in progress. Resolve only those conflicts and commit.")
-		return strings.Join(notes, " "), nil
-	}
-	if mergeHead.ExitCode != 1 {
-		return "", fail("cannot inspect recovery merge state")
 	}
 	containsTarget, err := isAncestorChecked(repository, targetSHA, head)
 	if err != nil {
@@ -316,23 +360,34 @@ func prepareRecovery(task Record) (string, error) {
 		notes = append(notes, "The task already contains the current target; finish and commit the result.")
 		return strings.Join(notes, " "), nil
 	}
-	merged, err := gitCommand(path, false, "-c", "core.hooksPath=/dev/null", "merge", "--no-ff", "--no-commit", targetSHA)
+	replayBase, err := publishReplayBase(repository, task, head, targetSHA)
 	if err != nil {
 		return "", err
 	}
-	if merged.ExitCode != 0 {
-		conflicts, conflictErr := gitCommand(path, true, "diff", "--name-only", "--diff-filter=U")
-		if conflictErr != nil {
-			return "", conflictErr
-		}
-		if strings.TrimSpace(conflicts.Stdout) == "" {
-			detail := strings.TrimSpace(merged.Stderr + merged.Stdout)
-			return "", fail("cannot prepare recovery merge: %s", firstNonempty(detail, fmt.Sprintf("git merge exited with %d", merged.ExitCode)))
-		}
-		notes = append(notes, "Myriad prepared merge conflicts with the current target. Resolve only those conflicts and commit.")
-	} else {
-		notes = append(notes, "Myriad staged the current target merge. Validate, make any needed fix, and commit it.")
+	relation, err := targetHistoryRelation(repository, replayBase, targetSHA)
+	if err != nil {
+		return "", err
 	}
+	switch relation {
+	case targetRewoundBase:
+		notes = append(notes, "The target moved behind the recorded replay base; automatic reconciliation remains unsafe.")
+		return strings.Join(notes, " "), nil
+	case targetUnrelated:
+		notes = append(notes, "The target has unrelated history; automatic reconciliation remains unsafe.")
+		return strings.Join(notes, " "), nil
+	}
+	replayedHead, conflicted, conflicts, err := prepareTargetReplay(store, task, path, target, targetSHA, replayBase, head)
+	if err != nil {
+		return "", fail("cannot prepare recovery replay: %v", err)
+	}
+	if !conflicted {
+		if _, err := adoptPreparedReplay(task, replayedHead); err != nil {
+			return "", err
+		}
+		notes = append(notes, "Myriad replayed the task onto the current target. Validate the result and publish it.")
+		return strings.Join(notes, " "), nil
+	}
+	notes = append(notes, "Myriad prepared a replay onto the current target. Resolve only "+describe(conflicts)+", add them, and rerun myriad publish so Myriad can continue; repeat if another conflict appears.")
 	return strings.Join(notes, " "), nil
 }
 
@@ -359,7 +414,14 @@ func prepareRecoveryCheckout(store *Store, task Record) (string, error) {
 	if err := recreateWorktree(store, task); err != nil {
 		return "", err
 	}
-	return prepareRecovery(task)
+	context, err := prepareRecovery(store, task)
+	if err != nil {
+		return "", err
+	}
+	if err := store.Save(task); err != nil {
+		return "", err
+	}
+	return context, nil
 }
 
 func defaultRecoveryCommand(agent, prompt string) ([]string, error) {

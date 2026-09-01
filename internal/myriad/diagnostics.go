@@ -46,7 +46,8 @@ func taskDiagnostic(store *Store, taskID string) (Record, error) {
 		"task_id", "status", "status_reason", "agent", "description", "created_at", "updated_at",
 		"repository", "branch", "target_branch", "base_sha", "result_commit", "published_commit", "integrated_commit",
 		"integration_strategy", "integration_target_relation", "worktree_path", "worktree_state",
-		"integration_candidate", "validation_failure", "reconcile_error", "cleanup_warning",
+		"integration_candidate", "prepared_replay", "resolved_replay_from_base", "resolved_replay_target",
+		"validation_failure", "reconcile_error", "cleanup_warning",
 		"last_integration_diagnostic", "integration_diagnostics", "last_publish_diagnostic", "publish_diagnostics",
 		"validation_attempts", "lifecycle_history",
 	} {
