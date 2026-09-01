@@ -52,7 +52,10 @@ run directly.
 Interactive Codex uses a private App Server over a Unix socket. A trusted
 first-prompt hook chooses a constrained semantic branch name and provisions the
 reserved worktree synchronously before the prompt reaches the model. The hook
-runtime is an immutable, content-addressed copy of the running binary.
+runtime is an immutable, content-addressed copy of the running binary. Managed
+Codex keeps its transcript in normal terminal scrollback while Myriad suppresses
+only the standard disconnect, reconnect, elapsed-time, and token-usage tail on
+exit. The saved Codex thread remains available to resume.
 
 ## Lifecycle commands
 

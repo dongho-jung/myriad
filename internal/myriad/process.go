@@ -74,7 +74,7 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 	// supervisor runs in its own group. Capture terminal signals here so the
 	// launcher can finish bookkeeping after the agent exits.
 	signals := make(chan os.Signal, 8)
-	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGWINCH)
 	defer signal.Stop(signals)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -82,7 +82,10 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 		select {
 		case waitErr := <-done:
 			return supervisedResult{ExitCode: exitCode(waitErr), SupervisorPID: cmd.Process.Pid}, nil
-		case <-signals:
+		case received := <-signals:
+			if received == syscall.SIGWINCH {
+				_ = cmd.Process.Signal(syscall.SIGWINCH)
+			}
 			// The foreground agent already received the terminal signal. Keep the
 			// launcher alive long enough to record and finalize its result.
 		}

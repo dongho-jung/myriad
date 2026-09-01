@@ -411,6 +411,33 @@ func rebaseIntegrationResult(path, targetSHA, base string) (string, bool, error)
 	return head, false, err
 }
 
+func publishReplayBase(repository string, task Record, resultCommit, targetSHA string) (string, error) {
+	base := stringValue(task, "base_sha")
+	seen := map[string]bool{}
+	for _, checkpoint := range []string{stringValue(task, "published_commit"), stringValue(task, "result_commit")} {
+		if checkpoint == "" || checkpoint == base || seen[checkpoint] {
+			continue
+		}
+		seen[checkpoint] = true
+		baseToCheckpoint, err := isAncestorChecked(repository, base, checkpoint)
+		if err != nil {
+			return "", err
+		}
+		checkpointToResult, err := isAncestorChecked(repository, checkpoint, resultCommit)
+		if err != nil {
+			return "", err
+		}
+		checkpointOnTarget, err := isAncestorChecked(repository, checkpoint, targetSHA)
+		if err != nil {
+			return "", err
+		}
+		if baseToCheckpoint && checkpointToResult && checkpointOnTarget {
+			return checkpoint, nil
+		}
+	}
+	return base, nil
+}
+
 func createIntegrationCandidate(repository string, task Record, targetSHA, resultCommit, candidate string) (string, string, error) {
 	if err := os.MkdirAll(filepath.Dir(candidate), 0o700); err != nil {
 		return "", "", err
@@ -945,7 +972,12 @@ func publishTaskCheckpoint(store *Store, task Record) (published Record, resultE
 		return nil, err
 	}
 	diagnostic["target_sha_before"] = targetSHA
-	relation, err := targetHistoryRelation(repository, base, targetSHA)
+	replayBase, err := publishReplayBase(repository, task, resultCommit, targetSHA)
+	if err != nil {
+		return nil, err
+	}
+	diagnostic["replay_base_sha"] = replayBase
+	relation, err := targetHistoryRelation(repository, replayBase, targetSHA)
 	if err != nil {
 		return nil, err
 	}
@@ -962,11 +994,16 @@ func publishTaskCheckpoint(store *Store, task Record) (published Record, resultE
 		return nil, err
 	}
 	if alreadyPresent {
+		task["published_commit"] = resultCommit
+		task["result_commit"] = resultCommit
+		if err := store.Save(task); err != nil {
+			return nil, err
+		}
 		return Record{"result_commit": resultCommit, "published_commit": targetSHA, "strategy": "already-present"}, nil
 	}
 	excludedHistory := targetSHA
 	if relation == targetDivergedBase {
-		excludedHistory = base
+		excludedHistory = replayBase
 	}
 	findings, err := forbiddenHistory(repository, resultCommit, excludedHistory)
 	if err != nil {
@@ -999,7 +1036,9 @@ func publishTaskCheckpoint(store *Store, task Record) (published Record, resultE
 			return nil, fail("target checkout is dirty: %s", checkout)
 		}
 	}
-	candidateHead, strategy, err := createIntegrationCandidate(repository, task, targetSHA, resultCommit, candidate)
+	candidateTask := cloneRecord(task)
+	candidateTask["base_sha"] = replayBase
+	candidateHead, strategy, err := createIntegrationCandidate(repository, candidateTask, targetSHA, resultCommit, candidate)
 	if err != nil {
 		return nil, err
 	}
@@ -1030,12 +1069,12 @@ func publishTaskCheckpoint(store *Store, task Record) (published Record, resultE
 		return nil, fail("task worktree changed while publish was validating")
 	}
 	if strings.HasPrefix(strategy, "rebase") {
-		if err := synchronizePublishedRebase(path, base, targetSHA, resultCommit, candidateHead); err != nil {
+		if err := synchronizePublishedRebase(path, replayBase, targetSHA, resultCommit, candidateHead); err != nil {
 			return nil, err
 		}
 		task["base_sha"] = targetSHA
 		task["result_commit"] = candidateHead
-		task["published_rebased_from_base"] = base
+		task["published_rebased_from_base"] = replayBase
 		if err := store.Save(task); err != nil {
 			return nil, err
 		}
@@ -1045,10 +1084,22 @@ func publishTaskCheckpoint(store *Store, task Record) (published Record, resultE
 		return nil, err
 	}
 	if !differs {
+		if candidateHead == targetSHA {
+			task["published_commit"] = targetSHA
+			task["result_commit"] = targetSHA
+			if err := store.Save(task); err != nil {
+				return nil, err
+			}
+		}
 		return Record{"result_commit": resultCommit, "published_commit": targetSHA, "strategy": "redundant"}, nil
 	}
 	if reason := advanceIntegrationTarget(repository, target, targetSHA, candidateHead, checkout); reason != "" {
 		return nil, fail("publish target changed: %s", reason)
+	}
+	task["published_commit"] = candidateHead
+	task["result_commit"] = candidateHead
+	if err := store.Save(task); err != nil {
+		return nil, err
 	}
 	return Record{"result_commit": resultCommit, "published_commit": candidateHead, "strategy": strategy}, nil
 }

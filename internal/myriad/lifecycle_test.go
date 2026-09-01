@@ -991,6 +991,93 @@ func TestPublishRebasesActiveTaskOntoAdvancedTarget(t *testing.T) {
 	}
 }
 
+func TestPublishReusesAndRepairsPublishedCheckpoint(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	path := stringValue(task, "worktree_path")
+	testCommitFile(t, path, "feature.txt", "first\n", "feat: add first task result")
+	firstTarget := testCommitFile(t, repository, "target-one.txt", "target one\n", "feat: advance first target")
+	task["status"] = StatusRunning
+	task["process"] = processRecord(os.Getpid(), "agent", 0)
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := publishTaskCheckpoint(store, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPublished := stringValue(first, "published_commit")
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(current, "base_sha") != firstTarget || stringValue(current, "published_commit") != firstPublished {
+		t.Fatalf("first publish checkpoint was not retained: %s", describe(current))
+	}
+
+	// Records produced before published_commit existed retained the same safe
+	// checkpoint in result_commit. Keep accepting that shape for active tasks.
+	delete(current, "published_commit")
+	if err := store.Save(current); err != nil {
+		t.Fatal(err)
+	}
+	testCommitFile(t, path, "feature.txt", "second\n", "fix: revise published task result")
+	secondTarget := testCommitFile(t, repository, "target-two.txt", "target two\n", "feat: advance second target")
+
+	second, err := publishTaskCheckpoint(store, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strategy := stringValue(second, "strategy"); strategy != "rebase" {
+		t.Fatalf("strategy = %s, want rebase", strategy)
+	}
+	secondPublished := stringValue(second, "published_commit")
+	parents := strings.Fields(testCommand(t, repository, "git", "rev-list", "--parents", "-n", "1", secondPublished))
+	if len(parents) != 2 || parents[1] != secondTarget {
+		t.Fatalf("second published commit parents = %v, want only %s", parents, secondTarget)
+	}
+	current, err = store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(current, "published_commit") != secondPublished || stringValue(current, "result_commit") != secondPublished {
+		t.Fatalf("second publish checkpoint was not retained: %s", describe(current))
+	}
+	diagnostic := recordMap(current, "last_publish_diagnostic")
+	if stringValue(diagnostic, "replay_base_sha") != firstPublished {
+		t.Fatalf("replay base = %s, want %s", stringValue(diagnostic, "replay_base_sha"), firstPublished)
+	}
+}
+
+func TestPublishFastForwardRetainsCheckpoint(t *testing.T) {
+	repository := testRepository(t)
+	store := testStore(t)
+	task := testTask(t, store, repository, createTaskOptions{})
+	result := testCommitFile(t, stringValue(task, "worktree_path"), "task.txt", "task\n", "feat: add task result")
+	task["status"] = StatusRunning
+	task["process"] = processRecord(os.Getpid(), "agent", 0)
+	if err := store.Save(task); err != nil {
+		t.Fatal(err)
+	}
+
+	published, err := publishTaskCheckpoint(store, task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strategy := stringValue(published, "strategy"); strategy != "fast-forward" {
+		t.Fatalf("strategy = %s, want fast-forward", strategy)
+	}
+	current, err := store.Load(stringValue(task, "task_id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(current, "published_commit") != result || stringValue(current, "result_commit") != result {
+		t.Fatalf("fast-forward checkpoint was not retained: %s", describe(current))
+	}
+}
+
 func TestTaskRefusesRewoundTarget(t *testing.T) {
 	repository := testRepository(t)
 	first, _ := gitRef(repository, "HEAD")

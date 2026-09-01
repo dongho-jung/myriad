@@ -69,11 +69,26 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 		}
 	}
 
+	outputRelay, err := prepareCodexOutputRelay(command, os.Stdin, os.Stdout)
+	if err != nil {
+		if control != nil {
+			stopCodexServer(control, true)
+		}
+		return 127, err
+	}
+	if outputRelay != nil {
+		defer outputRelay.abort()
+	}
+
 	agent := exec.Command(command[0], command[1:]...)
 	agent.Env = os.Environ()
 	agent.Stdin = os.Stdin
-	agent.Stdout = os.Stdout
-	agent.Stderr = os.Stderr
+	if outputRelay != nil {
+		outputRelay.attach(agent)
+	} else {
+		agent.Stdout = os.Stdout
+		agent.Stderr = os.Stderr
+	}
 	agent.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: foregroundPGID, Pdeathsig: syscall.SIGKILL}
 	if err := agent.Start(); err != nil {
 		if control != nil {
@@ -81,10 +96,13 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 		}
 		return 127, fail("cannot execute supervised agent: %v", err)
 	}
+	if outputRelay != nil {
+		outputRelay.started()
+	}
 	agentPID := agent.Process.Pid
 
 	signalChannel := make(chan os.Signal, 32)
-	signal.Notify(signalChannel, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2)
+	signal.Notify(signalChannel, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGWINCH)
 	defer signal.Stop(signalChannel)
 	if sessionPath != "" {
 		_ = updateSessionMetadata(sessionPath, sessionID, Record{
@@ -115,6 +133,11 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 					continue
 				}
 				if errors.Is(waitErr, unix.ECHILD) && mainDone {
+					if outputRelay != nil {
+						if relayErr := outputRelay.wait(); relayErr != nil {
+							fmt.Fprintf(os.Stderr, "myriad: Codex terminal output relay failed: %v\n", relayErr)
+						}
+					}
 					return supervisorResult(intentionalHandoff, mainExit), nil
 				}
 				break
@@ -222,6 +245,13 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 		select {
 		case received := <-signalChannel:
 			switch received {
+			case syscall.SIGWINCH:
+				if outputRelay != nil {
+					_ = outputRelay.resize(os.Stdout)
+					if !mainDone {
+						_ = unix.Kill(agentPID, unix.SIGWINCH)
+					}
+				}
 			case syscall.SIGUSR1:
 				notificationRequested = true
 			case syscall.SIGUSR2:

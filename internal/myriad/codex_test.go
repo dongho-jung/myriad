@@ -82,6 +82,7 @@ func TestCodexAcceptsProvisionHookConfig(t *testing.T) {
 	}
 	command := exec.Command(codex,
 		"-c", codexProvisionHookConfig("/tmp/myriad"),
+		"-c", "tui.alternate_screen=never",
 		"--dangerously-bypass-hook-trust", "features", "list",
 	)
 	command.Env = os.Environ()
@@ -287,8 +288,8 @@ func TestCodexHookRuntimeRestoresExecutableMode(t *testing.T) {
 	}
 }
 
-func TestCodexTUICommandIncludesThreadTitle(t *testing.T) {
-	command := codexTUICommand(nil, "/project")
+func TestCodexTUICommandIncludesThreadTitleOutsideRepository(t *testing.T) {
+	command := codexTUICommand(nil, t.TempDir())
 	joined := strings.Join(command, "\n")
 	if !strings.Contains(joined, `"thread-title"`) {
 		t.Fatalf("direct command is missing its thread title: %#v", command)
@@ -305,6 +306,7 @@ func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
 	command := codexRemoteCommand(
 		[]string{
 			"codex",
+			"-c", "tui.alternate_screen=always",
 			"-c", "tui.show_tooltips=true",
 			"-c", codexStatusLine,
 			"--dangerously-bypass-approvals-and-sandbox",
@@ -315,10 +317,16 @@ func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
 	if strings.Contains(joined, "tui.show_tooltips=true") {
 		t.Fatalf("stale tooltip override survived: %#v", command)
 	}
+	if strings.Contains(joined, "tui.alternate_screen=always") {
+		t.Fatalf("stale alternate-screen override survived: %#v", command)
+	}
+	if count := strings.Count(joined, "tui.alternate_screen="); count != 1 {
+		t.Fatalf("remote command has %d alternate-screen overrides: %#v", count, command)
+	}
 	if count := strings.Count(joined, "tui.status_line="); count != 1 {
 		t.Fatalf("remote command has %d status line overrides: %#v", count, command)
 	}
-	for _, expected := range []string{"--remote", "unix:///tmp/control.sock", "--cd", "/project", "tui.show_tooltips=false", codexStatusLine} {
+	for _, expected := range []string{"--remote", "unix:///tmp/control.sock", "--cd", "/project", "tui.alternate_screen=never", "tui.show_tooltips=false", codexStatusLine} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("remote command is missing %q: %#v", expected, command)
 		}

@@ -44,7 +44,7 @@ func taskDiagnostic(store *Store, taskID string) (Record, error) {
 	summary := Record{}
 	for _, key := range []string{
 		"task_id", "status", "status_reason", "agent", "description", "created_at", "updated_at",
-		"repository", "branch", "target_branch", "base_sha", "result_commit", "integrated_commit",
+		"repository", "branch", "target_branch", "base_sha", "result_commit", "published_commit", "integrated_commit",
 		"integration_strategy", "integration_target_relation", "worktree_path", "worktree_state",
 		"integration_candidate", "validation_failure", "reconcile_error", "cleanup_warning",
 		"last_integration_diagnostic", "integration_diagnostics", "last_publish_diagnostic", "publish_diagnostics",
@@ -79,7 +79,8 @@ func taskDiagnostic(store *Store, taskID string) (Record, error) {
 
 	repository, target := stringValue(task, "repository"), stringValue(task, "target_branch")
 	base, taskResult := stringValue(task, "base_sha"), stringValue(task, "result_commit")
-	refs := Record{"base_sha": base, "result_commit": taskResult, "target_branch": target}
+	publishedCommit := stringValue(task, "published_commit")
+	refs := Record{"base_sha": base, "result_commit": taskResult, "published_commit": publishedCommit, "target_branch": target}
 	targetSHA := ""
 	if repository != "" && target != "" {
 		if value, refErr := gitRef(repository, "refs/heads/"+target); refErr == nil {
@@ -101,6 +102,13 @@ func taskDiagnostic(store *Store, taskID string) (Record, error) {
 			refs["result_on_target"] = present
 		} else {
 			refs["result_on_target_error"] = presentErr.Error()
+		}
+	}
+	if repository != "" && publishedCommit != "" && targetSHA != "" {
+		if present, presentErr := isAncestorChecked(repository, publishedCommit, targetSHA); presentErr == nil {
+			refs["published_commit_on_target"] = present
+		} else {
+			refs["published_commit_on_target_error"] = presentErr.Error()
 		}
 	}
 	result["refs"] = refs
