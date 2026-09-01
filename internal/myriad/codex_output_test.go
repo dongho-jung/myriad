@@ -86,6 +86,52 @@ func TestCodexExitTailFilterFailsOpenWhenTailIsUnexpectedlyLarge(t *testing.T) {
 	}
 }
 
+func TestCodexExitTailFilterForwardsInteractiveOutputImmediately(t *testing.T) {
+	chunks := []string{
+		"한글 입력",
+		"\x1b[?1007l",
+		"\x1b[12;34H",
+	}
+	var output bytes.Buffer
+	filter := &codexExitTailFilter{destination: &output}
+	want := ""
+	for _, chunk := range chunks {
+		want += chunk
+		if err := filter.write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+		if got := output.String(); got != want {
+			t.Fatalf("interactive output was delayed: got %q, want %q", got, want)
+		}
+	}
+}
+
+func TestCodexExitTailFilterResumesImmediateForwarding(t *testing.T) {
+	var output bytes.Buffer
+	filter := &codexExitTailFilter{destination: &output}
+	if err := filter.write([]byte(codexTerminalCleanupMarker)); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != codexTerminalCleanupMarker {
+		t.Fatalf("cleanup marker was delayed: got %q", got)
+	}
+	paused := "paused" + codexTerminalResumeMarker
+	if err := filter.write([]byte(paused)); err != nil {
+		t.Fatal(err)
+	}
+	want := codexTerminalCleanupMarker + paused
+	if got := output.String(); got != want {
+		t.Fatalf("resumed output = %q, want %q", got, want)
+	}
+	if err := filter.write([]byte("다시 입력")); err != nil {
+		t.Fatal(err)
+	}
+	want += "다시 입력"
+	if got := output.String(); got != want {
+		t.Fatalf("post-resume output was delayed: got %q, want %q", got, want)
+	}
+}
+
 func TestCodexOutputRelayEligibility(t *testing.T) {
 	tests := []struct {
 		name     string

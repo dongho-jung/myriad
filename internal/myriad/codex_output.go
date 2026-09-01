@@ -172,35 +172,43 @@ func relayCodexOutput(source *os.File, destination io.Writer) error {
 }
 
 type codexExitTailFilter struct {
-	destination io.Writer
-	probe       []byte
-	tail        []byte
+	destination   io.Writer
+	tail          []byte
+	cleanupMatch  int
+	capturingTail bool
 }
 
 func (filter *codexExitTailFilter) write(input []byte) error {
-	if len(filter.tail) > 0 {
+	if filter.capturingTail {
 		return filter.writeTail(input)
 	}
-	filter.probe = append(filter.probe, input...)
+	return filter.writeLive(input)
+}
+
+// Partial cleanup-marker matches have already been sent to the real terminal.
+// Retaining them would split UTF-8 and terminal mode sequences during redraws.
+func (filter *codexExitTailFilter) writeLive(input []byte) error {
 	marker := []byte(codexTerminalCleanupMarker)
-	if index := bytes.Index(filter.probe, marker); index >= 0 {
-		if err := writeAll(filter.destination, filter.probe[:index]); err != nil {
-			return err
+	for index, value := range input {
+		switch value {
+		case marker[filter.cleanupMatch]:
+			filter.cleanupMatch++
+		case marker[0]:
+			filter.cleanupMatch = 1
+		default:
+			filter.cleanupMatch = 0
 		}
-		filter.tail = append(filter.tail, filter.probe[index:]...)
-		filter.probe = nil
-		return filter.checkTail()
+		if filter.cleanupMatch == len(marker) {
+			end := index + 1
+			if err := writeAll(filter.destination, input[:end]); err != nil {
+				return err
+			}
+			filter.cleanupMatch = 0
+			filter.capturingTail = true
+			return filter.writeTail(input[end:])
+		}
 	}
-	keep := len(marker) - 1
-	if len(filter.probe) <= keep {
-		return nil
-	}
-	flush := len(filter.probe) - keep
-	if err := writeAll(filter.destination, filter.probe[:flush]); err != nil {
-		return err
-	}
-	filter.probe = append(filter.probe[:0], filter.probe[flush:]...)
-	return nil
+	return writeAll(filter.destination, input)
 }
 
 func (filter *codexExitTailFilter) writeTail(input []byte) error {
@@ -210,15 +218,15 @@ func (filter *codexExitTailFilter) writeTail(input []byte) error {
 
 func (filter *codexExitTailFilter) checkTail() error {
 	resume := []byte(codexTerminalResumeMarker)
-	searchFrom := len(codexTerminalCleanupMarker)
-	if len(filter.tail) > searchFrom {
-		if relative := bytes.Index(filter.tail[searchFrom:], resume); relative >= 0 {
-			end := searchFrom + relative + len(resume)
+	if len(filter.tail) > 0 {
+		if index := bytes.Index(filter.tail, resume); index >= 0 {
+			end := index + len(resume)
 			if err := writeAll(filter.destination, filter.tail[:end]); err != nil {
 				return err
 			}
 			remainder := append([]byte{}, filter.tail[end:]...)
 			filter.tail = nil
+			filter.capturingTail = false
 			return filter.write(remainder)
 		}
 	}
@@ -229,14 +237,13 @@ func (filter *codexExitTailFilter) checkTail() error {
 	// normal terminal cleanup within this bounded tail, emit everything.
 	pending := filter.tail
 	filter.tail = nil
+	filter.capturingTail = false
 	return writeAll(filter.destination, pending)
 }
 
 func (filter *codexExitTailFilter) finish() error {
-	if len(filter.tail) == 0 {
-		err := writeAll(filter.destination, filter.probe)
-		filter.probe = nil
-		return err
+	if !filter.capturingTail {
+		return nil
 	}
 	output, suppressed := suppressCodexExitSummary(filter.tail)
 	if err := writeAll(filter.destination, output); err != nil {
@@ -248,6 +255,7 @@ func (filter *codexExitTailFilter) finish() error {
 		}
 	}
 	filter.tail = nil
+	filter.capturingTail = false
 	return nil
 }
 
