@@ -92,12 +92,14 @@ validation path, and integration result for that repository.
 
 Jira and pull-request display context is private task runtime state under the
 Myriad state directory, not repository memory. Each command accepts
-space-separated values, preserves their order, and removes duplicates. While a
-Codex TUI is connected, Myriad coalesces title changes and writes the final Jira
-group and branch name after the TUI exits. The next resume or thread listing
-therefore sees a title such as `[COM-12 CER-42] fix-login -> main` without
-injecting Codex's `Session renamed` notices into the active transcript. Myriad
-enables Codex's native
+space-separated values, preserves their order, and removes duplicates. Managed
+Codex sessions always include Codex's native `thread-title` status item, so a
+fresh chat shows its generated title as soon as Codex names it. While a Codex
+TUI is connected, Myriad coalesces its own title changes and writes the final
+Jira group and branch name after the TUI exits. The next resume or thread
+listing therefore sees a title such as `[COM-12 CER-42] fix-login -> main`
+without injecting extra `Session renamed` notices into the active transcript.
+Myriad also enables Codex's native
 `pull-request-number` status item beside it: when Codex discovers an open pull
 request for the current checkout, it renders that PR separately as a clickable
 terminal hyperlink. Claude and the operator-facing Myriad status line continue

@@ -201,8 +201,8 @@ func TestFreshManagedCodexAppServerDoesNotResumeEmptyThread(t *testing.T) {
 	if codexSubcommand(command) != "" {
 		t.Fatalf("fresh managed launch unexpectedly resumes an empty thread: %#v", command)
 	}
-	if strings.Contains(strings.Join(command, "\n"), "thread-title") {
-		t.Fatalf("fresh managed launch exposes an unset thread title: %#v", command)
+	if !strings.Contains(strings.Join(command, "\n"), codexManagedStatusLine) {
+		t.Fatalf("fresh managed launch is missing its thread title status item: %#v", command)
 	}
 }
 
@@ -347,22 +347,14 @@ func TestCodexRemoteCommandKeepsExplicitWorkingDirectory(t *testing.T) {
 	}
 }
 
-func TestFreshManagedCodexStartsWithoutThreadTitle(t *testing.T) {
+func TestFreshManagedCodexStartsWithThreadTitle(t *testing.T) {
 	fresh := []string{"codex", "--dangerously-bypass-approvals-and-sandbox"}
-	if got := codexRemoteStatusLine(fresh, true); got != codexDirectStatusLine {
-		t.Fatalf("fresh managed status line = %q, want %q", got, codexDirectStatusLine)
-	}
-	command := codexRemoteCommand(fresh, "/tmp/control.sock", []string{"/project"}, codexRemoteStatusLine(fresh, true), "/project")
-	if strings.Contains(strings.Join(command, "\n"), "thread-title") {
-		t.Fatalf("fresh managed command exposes an empty thread title: %#v", command)
+	command := codexRemoteCommand(fresh, "/tmp/control.sock", []string{"/project"}, codexManagedStatusLine, "/project")
+	if !strings.Contains(strings.Join(command, "\n"), codexManagedStatusLine) {
+		t.Fatalf("fresh managed command is missing its thread title status item: %#v", command)
 	}
 	if codexSubcommand(command) != "" {
 		t.Fatalf("fresh managed command unexpectedly resumes a thread: %#v", command)
-	}
-
-	resume := []string{"codex", "resume", "thread-id"}
-	if got := codexRemoteStatusLine(resume, true); got != codexManagedStatusLine {
-		t.Fatalf("resume status line = %q, want %q", got, codexManagedStatusLine)
 	}
 }
 

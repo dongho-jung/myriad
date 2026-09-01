@@ -355,13 +355,6 @@ func stripManagedCodexTUIConfigs(command []string, executable int) []string {
 	return result
 }
 
-func codexRemoteStatusLine(command []string, provisionHook bool) string {
-	if provisionHook && freshInteractiveCodexCommand(command) {
-		return codexDirectStatusLine
-	}
-	return codexManagedStatusLine
-}
-
 func codexHasWorkingDirectory(command []string, executable int) bool {
 	for index := executable + 1; index < len(command); {
 		value := command[index]
@@ -852,7 +845,7 @@ func startCodexAppServer(store *Store, command []string, socketPath string, trus
 		return nil, nil, err
 	}
 	provisionHook := codexProvisionHookRequired()
-	remoteCommand := codexRemoteCommand(agentCommand, socketPath, trustedDirectories, codexRemoteStatusLine(agentCommand, provisionHook), workingDirectory)
+	remoteCommand := codexRemoteCommand(agentCommand, socketPath, trustedDirectories, codexManagedStatusLine, workingDirectory)
 	if remoteCommand == nil {
 		return nil, command, nil
 	}
