@@ -123,7 +123,7 @@ func testCodexSlugServer(t *testing.T, socketPath string) (<-chan Record, <-chan
 	return threadParams, turnParams
 }
 
-func TestGenerateCodexTaskSlugUsesLunaMax(t *testing.T) {
+func TestGenerateCodexTaskSlugUsesLunaMedium(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "codex.sock")
 	threadParams, turnParams := testCodexSlugServer(t, socketPath)
 
@@ -144,8 +144,8 @@ func TestGenerateCodexTaskSlugUsesLunaMax(t *testing.T) {
 	if ephemeral, _ := thread["ephemeral"].(bool); !ephemeral {
 		t.Fatal("slug thread is not ephemeral")
 	}
-	if codexSlugEffort != "max" {
-		t.Fatalf("slug effort constant = %q, want max", codexSlugEffort)
+	if codexSlugEffort != "medium" {
+		t.Fatalf("slug effort constant = %q, want medium", codexSlugEffort)
 	}
 	turn := <-turnParams
 	if got := stringValue(turn, "effort"); got != codexSlugEffort {

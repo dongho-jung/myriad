@@ -50,7 +50,7 @@ remote-control, teleport, and built-in worktree modes remain owned by Claude and
 run directly.
 
 Interactive Codex uses a private App Server over a Unix socket. A trusted
-first-prompt hook asks `gpt-5.6-luna` at maximum reasoning for one constrained
+first-prompt hook asks `gpt-5.6-luna` at medium reasoning for one constrained
 semantic slug, uses it for the branch and active Codex thread title, and
 provisions the reserved worktree synchronously before the prompt reaches the
 model. The hook runtime is an immutable, content-addressed copy of the running

@@ -53,7 +53,7 @@ const (
 	worktreeReady    = "ready"
 
 	codexSlugModel        = "gpt-5.6-luna"
-	codexSlugEffort       = "max"
+	codexSlugEffort       = "medium"
 	codexSlugLimit        = 48
 	codexSlugPreviewLimit = 4000
 	codexStatusLine       = `tui.status_line=["thread-title","pull-request-number","current-dir","model-with-reasoning"]`
