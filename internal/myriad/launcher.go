@@ -77,7 +77,7 @@ func codexTUICommand(arguments []string, project string) []string {
 		"codex",
 		"-c", codexTrustedProjectsConfig([]string{project}),
 		"-c", "tui.show_tooltips=false",
-		"-c", codexDirectStatusLine,
+		"-c", codexStatusLine,
 		"--dangerously-bypass-approvals-and-sandbox",
 	}, arguments...)
 }

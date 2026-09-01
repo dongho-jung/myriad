@@ -202,7 +202,7 @@ func TestFreshManagedCodexAppServerDoesNotResumeEmptyThread(t *testing.T) {
 	if codexSubcommand(command) != "" {
 		t.Fatalf("fresh managed launch unexpectedly resumes an empty thread: %#v", command)
 	}
-	if !strings.Contains(strings.Join(command, "\n"), codexManagedStatusLine) {
+	if !strings.Contains(strings.Join(command, "\n"), codexStatusLine) {
 		t.Fatalf("fresh managed launch is missing its thread title status item: %#v", command)
 	}
 }
@@ -288,17 +288,17 @@ func TestCodexHookRuntimeRestoresExecutableMode(t *testing.T) {
 	}
 }
 
-func TestCodexTUICommandOmitsUnmanagedThreadTitle(t *testing.T) {
-	command := codexTUICommand(nil, "/project")
+func TestCodexTUICommandIncludesThreadTitleOutsideRepository(t *testing.T) {
+	command := codexTUICommand(nil, t.TempDir())
 	joined := strings.Join(command, "\n")
-	if strings.Contains(joined, "thread-title") {
-		t.Fatalf("unmanaged command exposes a thread title: %#v", command)
+	if !strings.Contains(joined, `"thread-title"`) {
+		t.Fatalf("direct command is missing its thread title: %#v", command)
 	}
-	if !strings.Contains(joined, codexDirectStatusLine) {
-		t.Fatalf("unmanaged command is missing its status line: %#v", command)
+	if !strings.Contains(joined, codexStatusLine) {
+		t.Fatalf("direct command is missing its status line: %#v", command)
 	}
-	if !strings.Contains(codexDirectStatusLine, `"pull-request-number"`) {
-		t.Fatalf("unmanaged status line does not expose Codex's linked PR item: %s", codexDirectStatusLine)
+	if !strings.Contains(codexStatusLine, `"pull-request-number"`) {
+		t.Fatalf("Codex status line does not expose its linked PR item: %s", codexStatusLine)
 	}
 }
 
@@ -308,10 +308,10 @@ func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
 			"codex",
 			"-c", "tui.alternate_screen=always",
 			"-c", "tui.show_tooltips=true",
-			"-c", codexDirectStatusLine,
+			"-c", codexStatusLine,
 			"--dangerously-bypass-approvals-and-sandbox",
 		},
-		"/tmp/control.sock", []string{"/project"}, codexManagedStatusLine, "/project",
+		"/tmp/control.sock", []string{"/project"}, codexStatusLine, "/project",
 	)
 	joined := strings.Join(command, "\n")
 	if strings.Contains(joined, "tui.show_tooltips=true") {
@@ -326,20 +326,20 @@ func TestCodexRemoteCommandKeepsLatestTUISettings(t *testing.T) {
 	if count := strings.Count(joined, "tui.status_line="); count != 1 {
 		t.Fatalf("remote command has %d status line overrides: %#v", count, command)
 	}
-	for _, expected := range []string{"--remote", "unix:///tmp/control.sock", "--cd", "/project", "tui.alternate_screen=never", "tui.show_tooltips=false", codexManagedStatusLine} {
+	for _, expected := range []string{"--remote", "unix:///tmp/control.sock", "--cd", "/project", "tui.alternate_screen=never", "tui.show_tooltips=false", codexStatusLine} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("remote command is missing %q: %#v", expected, command)
 		}
 	}
-	if !strings.HasPrefix(codexManagedStatusLine, `tui.status_line=["thread-title","pull-request-number",`) {
-		t.Fatalf("managed status line does not place Codex's linked PR item after its context title: %s", codexManagedStatusLine)
+	if !strings.HasPrefix(codexStatusLine, `tui.status_line=["thread-title","pull-request-number",`) {
+		t.Fatalf("status line does not place Codex's linked PR item after its title: %s", codexStatusLine)
 	}
 }
 
 func TestCodexRemoteCommandKeepsExplicitWorkingDirectory(t *testing.T) {
 	command := codexRemoteCommand(
 		[]string{"codex", "--cd", "/selected"},
-		"/tmp/control.sock", []string{"/project"}, codexManagedStatusLine, "/project",
+		"/tmp/control.sock", []string{"/project"}, codexStatusLine, "/project",
 	)
 	count := 0
 	for _, argument := range command {
@@ -357,8 +357,8 @@ func TestCodexRemoteCommandKeepsExplicitWorkingDirectory(t *testing.T) {
 
 func TestFreshManagedCodexStartsWithThreadTitle(t *testing.T) {
 	fresh := []string{"codex", "--dangerously-bypass-approvals-and-sandbox"}
-	command := codexRemoteCommand(fresh, "/tmp/control.sock", []string{"/project"}, codexManagedStatusLine, "/project")
-	if !strings.Contains(strings.Join(command, "\n"), codexManagedStatusLine) {
+	command := codexRemoteCommand(fresh, "/tmp/control.sock", []string{"/project"}, codexStatusLine, "/project")
+	if !strings.Contains(strings.Join(command, "\n"), codexStatusLine) {
 		t.Fatalf("fresh managed command is missing its thread title status item: %#v", command)
 	}
 	if codexSubcommand(command) != "" {

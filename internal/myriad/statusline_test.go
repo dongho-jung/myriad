@@ -135,8 +135,8 @@ func TestContextCommandRefreshesActiveCodexTitle(t *testing.T) {
 	if got, want := <-names, "fix-login -> main"; got != want {
 		t.Fatalf("cleared title = %q, want %q", got, want)
 	}
-	if !strings.HasPrefix(codexManagedStatusLine, `tui.status_line=["thread-title","pull-request-number",`) {
-		t.Fatalf("managed Codex status line does not lead with context and linked PR items: %s", codexManagedStatusLine)
+	if !strings.HasPrefix(codexStatusLine, `tui.status_line=["thread-title","pull-request-number",`) {
+		t.Fatalf("Codex status line does not lead with title and linked PR items: %s", codexStatusLine)
 	}
 }
 
