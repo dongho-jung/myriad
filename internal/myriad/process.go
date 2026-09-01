@@ -22,13 +22,6 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 	if len(command) == 0 {
 		return supervisedResult{}, fail("supervisor has no agent command")
 	}
-	privateScreen, err := startPrivateCodexScreen(command, os.Stdin, os.Stdout)
-	if err != nil {
-		return supervisedResult{}, err
-	}
-	if privateScreen != nil {
-		defer func() { _ = privateScreen.restore() }()
-	}
 	executable, err := executablePath()
 	if err != nil {
 		return supervisedResult{}, err
@@ -40,9 +33,6 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = environment
-	if privateScreen != nil {
-		cmd.Env = overlayEnvironment(cmd.Env, map[string]string{envCodexPrivateScreen: "1"})
-	}
 	foregroundPGID, err := unix.Getpgid(0)
 	if err != nil || foregroundPGID <= 0 {
 		return supervisedResult{}, fail("cannot identify foreground process group")
@@ -84,18 +74,18 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 	// supervisor runs in its own group. Capture terminal signals here so the
 	// launcher can finish bookkeeping after the agent exits.
 	signals := make(chan os.Signal, 8)
-	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(signals, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGWINCH)
 	defer signal.Stop(signals)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	for {
 		select {
 		case waitErr := <-done:
-			if privateScreen != nil && supervisorExitedNormally(waitErr) {
-				privateScreen.disarm()
-			}
 			return supervisedResult{ExitCode: exitCode(waitErr), SupervisorPID: cmd.Process.Pid}, nil
-		case <-signals:
+		case received := <-signals:
+			if received == syscall.SIGWINCH {
+				_ = cmd.Process.Signal(syscall.SIGWINCH)
+			}
 			// The foreground agent already received the terminal signal. Keep the
 			// launcher alive long enough to record and finalize its result.
 		}
@@ -103,11 +93,6 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 }
 
 func supervisor(raw []string) (int, error) {
-	privateScreen := os.Getenv(envCodexPrivateScreen) == "1"
-	_ = os.Unsetenv(envCodexPrivateScreen)
-	if privateScreen {
-		defer func() { _, _ = os.Stdout.WriteString(leaveAlternateScreen) }()
-	}
 	if err := platformSupported(); err != nil {
 		return 2, err
 	}
