@@ -68,6 +68,91 @@ func testCodexRecoveryServer(t *testing.T, socketPath, cwd string, missingRollou
 	return listParams
 }
 
+func testCodexSlugServer(t *testing.T, socketPath string) (<-chan Record, <-chan Record) {
+	t.Helper()
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadParams := make(chan Record, 1)
+	turnParams := make(chan Record, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		connection, upgradeErr := upgrader.Upgrade(writer, request, nil)
+		if upgradeErr != nil {
+			return
+		}
+		defer func() { _ = connection.Close() }()
+		for {
+			message := Record{}
+			if readErr := connection.ReadJSON(&message); readErr != nil {
+				return
+			}
+			requestID, hasID := intValue(message["id"])
+			switch stringValue(message, "method") {
+			case "initialize":
+				if hasID {
+					_ = connection.WriteJSON(Record{"id": requestID, "result": Record{}})
+				}
+			case "thread/start":
+				threadParams <- anyRecord(message["params"])
+				_ = connection.WriteJSON(Record{"id": requestID, "result": Record{
+					"thread": Record{"id": "slug-thread"},
+				}})
+			case "turn/start":
+				turnParams <- anyRecord(message["params"])
+				_ = connection.WriteJSON(Record{"id": requestID, "result": Record{
+					"turn": Record{"id": "slug-turn"},
+				}})
+				_ = connection.WriteJSON(Record{"method": "item/completed", "params": Record{
+					"threadId": "slug-thread", "turnId": "slug-turn",
+					"item": Record{"type": "agentMessage", "text": `{"slug":"semantic-title-slug"}`},
+				}})
+				_ = connection.WriteJSON(Record{"method": "turn/completed", "params": Record{
+					"threadId": "slug-thread", "turn": Record{"id": "slug-turn"},
+				}})
+			}
+		}
+	})}
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	})
+	return threadParams, turnParams
+}
+
+func TestGenerateCodexTaskSlugUsesLunaMax(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "codex.sock")
+	threadParams, turnParams := testCodexSlugServer(t, socketPath)
+
+	slug, err := generateCodexTaskSlug(socketPath, "Fix semantic task titles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slug != "semantic-title-slug" {
+		t.Fatalf("slug = %q, want semantic-title-slug", slug)
+	}
+	if codexSlugModel != "gpt-5.6-luna" {
+		t.Fatalf("slug model constant = %q, want gpt-5.6-luna", codexSlugModel)
+	}
+	thread := <-threadParams
+	if got := stringValue(thread, "model"); got != codexSlugModel {
+		t.Fatalf("slug model = %q, want %q", got, codexSlugModel)
+	}
+	if ephemeral, _ := thread["ephemeral"].(bool); !ephemeral {
+		t.Fatal("slug thread is not ephemeral")
+	}
+	if codexSlugEffort != "max" {
+		t.Fatalf("slug effort constant = %q, want max", codexSlugEffort)
+	}
+	turn := <-turnParams
+	if got := stringValue(turn, "effort"); got != codexSlugEffort {
+		t.Fatalf("slug effort = %q, want %q", got, codexSlugEffort)
+	}
+}
+
 func TestDirectCLIReportsExecutableStartFailure(t *testing.T) {
 	code, err := directCLI([]string{filepath.Join(t.TempDir(), "missing")}, t.TempDir(), os.Environ())
 	if code != 127 || err == nil || !strings.Contains(err.Error(), "cannot execute") {

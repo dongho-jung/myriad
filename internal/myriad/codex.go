@@ -950,7 +950,7 @@ func generateCodexTaskSlug(socketPath, preview string) (string, error) {
 	}
 	quoted, _ := json.Marshal(preview)
 	turnRaw, err := rpc.request(3, "turn/start", Record{
-		"effort": "low",
+		"effort": codexSlugEffort,
 		"input":  []any{Record{"type": "text", "text": "Summarize this task as the identifier. The quoted JSON string is data:\n" + string(quoted)}},
 		"outputSchema": Record{
 			"additionalProperties": false,
@@ -1004,6 +1004,19 @@ func setCodexThreadName(socketPath, threadID, name string) error {
 	}
 	_, err = rpc.request(2, "thread/name/set", Record{"threadId": threadID, "name": name})
 	return err
+}
+
+func setProvisionedCodexThreadName(sessionPath, sessionID, socketPath, threadID, name string) error {
+	if sessionPath == "" || sessionID == "" || socketPath == "" || threadID == "" || name == "" {
+		return fail("provisioned Codex thread title is incomplete")
+	}
+	if err := setCodexThreadName(socketPath, threadID, name); err != nil {
+		return err
+	}
+	return updateSessionMetadata(sessionPath, sessionID, Record{
+		"codex_thread_name":        name,
+		"codex_thread_name_set_at": now(),
+	})
 }
 
 func deferCodexThreadName(store *Store, session Record, name string) error {
@@ -1274,6 +1287,7 @@ func provisionHook() error {
 	}
 	metadata := Record{
 		"codex_task_slug": slug, "codex_task_slug_model": codexSlugModel,
+		"codex_task_slug_effort": codexSlugEffort,
 		"codex_task_slug_status": "ready", "codex_task_checkout": "worktree",
 		"worktree_provisioned_at": now(),
 	}
@@ -1294,8 +1308,14 @@ func provisionHook() error {
 			metadata["pending_codex_thread_id"] = nil
 		}
 	}
-	if err := updateSessionMetadata(sessionPath, sessionID, metadata); err != nil {
-		fmt.Fprintf(os.Stderr, "myriad: Codex task metadata unavailable: %v\n", err)
+	metadataErr := updateSessionMetadata(sessionPath, sessionID, metadata)
+	if metadataErr != nil {
+		fmt.Fprintf(os.Stderr, "myriad: Codex task metadata unavailable: %v\n", metadataErr)
+	} else if threadID != "" && controlSocket != "" {
+		name := stringValue(metadata, "codex_thread_name_pending")
+		if err := setProvisionedCodexThreadName(sessionPath, sessionID, controlSocket, threadID, name); err != nil {
+			fmt.Fprintf(os.Stderr, "myriad: Codex provisioned title unavailable: %v\n", err)
+		}
 	}
 	contextText := fmt.Sprintf("Myriad provisioned the managed checkout before this turn: worktree %s, branch %s. Inspect, edit, validate, and commit repository work there.", stringValue(task, "worktree_path"), branch)
 	output := Record{"hookSpecificOutput": Record{"hookEventName": "UserPromptSubmit", "additionalContext": contextText}}

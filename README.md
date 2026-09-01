@@ -50,12 +50,13 @@ remote-control, teleport, and built-in worktree modes remain owned by Claude and
 run directly.
 
 Interactive Codex uses a private App Server over a Unix socket. A trusted
-first-prompt hook chooses a constrained semantic branch name and provisions the
-reserved worktree synchronously before the prompt reaches the model. The hook
-runtime is an immutable, content-addressed copy of the running binary. Managed
-Codex keeps its transcript in normal terminal scrollback while Myriad suppresses
-only the standard disconnect, reconnect, elapsed-time, and token-usage tail on
-exit. The saved Codex thread remains available to resume.
+first-prompt hook asks `gpt-5.6-luna` at maximum reasoning for one constrained
+semantic slug, uses it for the branch and active Codex thread title, and
+provisions the reserved worktree synchronously before the prompt reaches the
+model. The hook runtime is an immutable, content-addressed copy of the running
+binary. Managed Codex keeps its transcript in normal terminal scrollback while
+Myriad suppresses only the standard disconnect, reconnect, elapsed-time, and
+token-usage tail on exit. The saved Codex thread remains available to resume.
 
 ## Lifecycle commands
 
@@ -105,12 +106,13 @@ validation path, and integration result for that repository.
 Jira and pull-request display context is private task runtime state under the
 Myriad state directory, not repository memory. Each command accepts
 space-separated values, preserves their order, and removes duplicates. Every
-Codex TUI launched by Myriad includes Codex's native `thread-title` status item,
-so direct and managed fresh chats show their generated titles as soon as Codex
-names them. While a managed Codex TUI is connected, Myriad coalesces its own
-title changes and writes the final Jira group and branch name after the TUI
-exits. The next resume or thread listing therefore sees a title such as
-`[COM-12 CER-42] fix-login -> main` without injecting extra `Session renamed`
+Codex TUI launched by Myriad includes Codex's native `thread-title` status item.
+Direct chats use Codex's generated title; a managed fresh chat replaces Codex's
+provisional prompt prefix with the same Luna-generated semantic branch title as
+soon as its checkout is provisioned. Later managed title changes are coalesced,
+and Myriad writes the final Jira group and branch name after the TUI exits. The
+next resume or thread listing therefore sees a title such as
+`[COM-12 CER-42] fix-login -> main` without injecting repeated `Session renamed`
 notices into the active transcript. Myriad also enables Codex's native
 `pull-request-number` status item beside it: when Codex discovers an open pull
 request for the current checkout, it renders that PR separately as a clickable

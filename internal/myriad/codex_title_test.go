@@ -6,6 +6,50 @@ import (
 	"testing"
 )
 
+func TestProvisionedCodexTitleIsAppliedWhileTUIIsActive(t *testing.T) {
+	store := testStore(t)
+	repository := testRepository(t)
+	reservation, err := acquireCheckoutSession(store, repository, true, sessionOptions{
+		Agent: "codex", TaskID: "provisioned-title-task", Repository: repository,
+		WorkingDirectory: repository,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reservation.Release(store, repository, "")
+	socketPath := filepath.Join(t.TempDir(), "codex.sock")
+	names := testCodexNameServer(t, socketPath)
+	const title = "fix-semantic-title -> main"
+	if err := updateSessionMetadata(reservation.SessionPath, reservation.SessionID, Record{
+		"codex_thread_name_pending": title,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := setProvisionedCodexThreadName(
+		reservation.SessionPath, reservation.SessionID, socketPath, "thread-one", title,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-names; got != title {
+		t.Fatalf("active title = %q, want %q", got, title)
+	}
+
+	var session Record
+	if err := readJSON(reservation.SessionPath, maxJSONBytes, &session); err != nil {
+		t.Fatal(err)
+	}
+	if got := stringValue(session, "codex_thread_name"); got != title {
+		t.Fatalf("recorded title = %q, want %q", got, title)
+	}
+	if got := stringValue(session, "codex_thread_name_pending"); got != title {
+		t.Fatalf("pending final title = %q, want %q", got, title)
+	}
+	if stringValue(session, "codex_thread_name_set_at") == "" {
+		t.Fatal("active title update time was not recorded")
+	}
+}
+
 func TestContextCommandDefersTitleWhileCodexTUIIsActive(t *testing.T) {
 	store := testStore(t)
 	repository := testRepository(t)
