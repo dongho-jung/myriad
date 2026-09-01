@@ -326,7 +326,11 @@ func codexTrustedProjectsConfig(directories []string) string {
 }
 
 func stripManagedCodexTUIConfigs(command []string, executable int) []string {
-	managed := map[string]bool{"tui.show_tooltips": true, "tui.status_line": true}
+	managed := map[string]bool{
+		"tui.alternate_screen": true,
+		"tui.show_tooltips":    true,
+		"tui.status_line":      true,
+	}
 	result := append([]string{}, command[:executable+1]...)
 	arguments := command[executable+1:]
 	for index := 0; index < len(arguments); {
@@ -395,6 +399,7 @@ func codexRemoteCommand(command []string, socketPath string, trustedDirectories 
 	}
 	addition = append(addition,
 		"-c", codexTrustedProjectsConfig(trustedDirectories),
+		"-c", "tui.alternate_screen=never",
 		"-c", "tui.show_tooltips=false",
 		"-c", statusLine,
 	)

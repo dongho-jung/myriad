@@ -22,6 +22,13 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 	if len(command) == 0 {
 		return supervisedResult{}, fail("supervisor has no agent command")
 	}
+	privateScreen, err := startPrivateCodexScreen(command, os.Stdin, os.Stdout)
+	if err != nil {
+		return supervisedResult{}, err
+	}
+	if privateScreen != nil {
+		defer func() { _ = privateScreen.restore() }()
+	}
 	executable, err := executablePath()
 	if err != nil {
 		return supervisedResult{}, err
@@ -33,6 +40,9 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = environment
+	if privateScreen != nil {
+		cmd.Env = overlayEnvironment(cmd.Env, map[string]string{envCodexPrivateScreen: "1"})
+	}
 	foregroundPGID, err := unix.Getpgid(0)
 	if err != nil || foregroundPGID <= 0 {
 		return supervisedResult{}, fail("cannot identify foreground process group")
@@ -81,6 +91,9 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 	for {
 		select {
 		case waitErr := <-done:
+			if privateScreen != nil && supervisorExitedNormally(waitErr) {
+				privateScreen.disarm()
+			}
 			return supervisedResult{ExitCode: exitCode(waitErr), SupervisorPID: cmd.Process.Pid}, nil
 		case <-signals:
 			// The foreground agent already received the terminal signal. Keep the
@@ -90,6 +103,11 @@ func runSupervised(command []string, cwd string, environment []string, reservati
 }
 
 func supervisor(raw []string) (int, error) {
+	privateScreen := os.Getenv(envCodexPrivateScreen) == "1"
+	_ = os.Unsetenv(envCodexPrivateScreen)
+	if privateScreen {
+		defer func() { _, _ = os.Stdout.WriteString(leaveAlternateScreen) }()
+	}
 	if err := platformSupported(); err != nil {
 		return 2, err
 	}
