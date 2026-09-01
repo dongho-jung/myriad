@@ -845,7 +845,7 @@ func startCodexAppServer(store *Store, command []string, socketPath string, trus
 		return nil, nil, err
 	}
 	provisionHook := codexProvisionHookRequired()
-	remoteCommand := codexRemoteCommand(agentCommand, socketPath, trustedDirectories, codexManagedStatusLine, workingDirectory)
+	remoteCommand := codexRemoteCommand(agentCommand, socketPath, trustedDirectories, codexStatusLine, workingDirectory)
 	if remoteCommand == nil {
 		return nil, command, nil
 	}

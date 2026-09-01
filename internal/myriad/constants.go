@@ -51,11 +51,10 @@ const (
 	worktreeCreating = "creating"
 	worktreeReady    = "ready"
 
-	codexSlugModel         = "gpt-5.6-luna"
-	codexSlugLimit         = 48
-	codexSlugPreviewLimit  = 4000
-	codexDirectStatusLine  = `tui.status_line=["pull-request-number","current-dir","model-with-reasoning"]`
-	codexManagedStatusLine = `tui.status_line=["thread-title","pull-request-number","current-dir","model-with-reasoning"]`
+	codexSlugModel        = "gpt-5.6-luna"
+	codexSlugLimit        = 48
+	codexSlugPreviewLimit = 4000
+	codexStatusLine       = `tui.status_line=["thread-title","pull-request-number","current-dir","model-with-reasoning"]`
 
 	notificationProtocol = 1
 )
