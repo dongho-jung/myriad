@@ -316,6 +316,65 @@ func TestActivityHookCLIProvidesNonBlockingContext(t *testing.T) {
 	}
 }
 
+func TestCodexActivityFollowsTheResumedThread(t *testing.T) {
+	myriad, _ := testMyriadBinaries(t)
+	store, repository := testStore(t), testRepository(t)
+	_, peer := testActivitySession(t, store, repository, "source-work")
+	task, session := testActivitySession(t, store, repository, "receiver-work")
+	if err := updateSessionMetadata(session.SessionPath, session.SessionID, Record{
+		"agent": "codex", "codex_thread_id": "old-thread", "working_directory": repository,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	testObserveActivity(t, store, peer, &activityIntent{Summary: "Change login flow", Paths: []string{"auth"}})
+	environment := overlayEnvironment(taskEnvironment(task), map[string]string{
+		envAgentSessionID: session.SessionID, envAgentSessionPath: session.SessionPath,
+	})
+	runHook := func(subcommand string, payload Record) string {
+		t.Helper()
+		input, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		command := exec.Command(myriad, subcommand)
+		command.Dir, command.Env = repository, environment
+		command.Stdin = strings.NewReader(string(input))
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("hook failed: %v\n%s", err, output)
+		}
+		return string(output)
+	}
+	payload := Record{"hook_event_name": "UserPromptSubmit", "session_id": "new-thread", "cwd": t.TempDir()}
+	if output := runHook(internalProvision, payload); output != "" {
+		t.Fatalf("unrelated thread consumed activity: %s", output)
+	}
+	payload["cwd"], payload["agent_id"] = repository, "subagent"
+	if output := runHook(internalProvision, payload); output != "" {
+		t.Fatalf("subagent consumed the foreground thread's activity: %s", output)
+	}
+	delete(payload, "agent_id")
+	if output := runHook(internalProvision, payload); !strings.Contains(output, "Change login flow") {
+		t.Fatalf("resumed thread missed the peer notice: %s", output)
+	}
+	metadata := Record{}
+	if err := readJSON(session.SessionPath, maxJSONBytes, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if stringValue(metadata, "codex_thread_id") != "new-thread" {
+		t.Fatal("prompt hook retained the old Codex thread identity")
+	}
+	testObserveActivity(t, store, peer, &activityIntent{Summary: "Change logout flow", Paths: []string{"auth"}})
+	payload["hook_event_name"], payload["session_id"] = "PostToolUse", "old-thread"
+	if output := runHook(internalActivityHook, payload); output != "" {
+		t.Fatalf("previous thread consumed the new thread's activity: %s", output)
+	}
+	payload["session_id"] = "new-thread"
+	if output := runHook(internalActivityHook, payload); !strings.Contains(output, "Change logout flow") {
+		t.Fatalf("resumed thread missed tool-boundary delivery: %s", output)
+	}
+}
+
 func TestWorkActivityDetectsFileOverlapWithoutIntentUpdate(t *testing.T) {
 	store, repository := testStore(t), testRepository(t)
 	_, first := testActivitySession(t, store, repository, "review-tests")

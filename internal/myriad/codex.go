@@ -453,7 +453,7 @@ func resolveCodexRecoveryCommand(command []string, threadID string) ([]string, e
 
 func codexPromptHookConfig(launcher string) string {
 	command, _ := json.Marshal(hookCommand(internalProvision, launcher))
-	return fmt.Sprintf(`hooks.UserPromptSubmit=[{ hooks = [{ type = "command", command = %s, timeout = 60, statusMessage = "Selecting managed checkout" }] }]`, command)
+	return fmt.Sprintf(`hooks.UserPromptSubmit=[{ hooks = [{ type = "command", command = %s, timeout = 60, statusMessage = "Checking managed session" }] }]`, command)
 }
 
 func codexActivityHookConfig(launcher, event string) string {
@@ -1181,7 +1181,7 @@ func provisionHook() error {
 	if err != nil {
 		return err
 	}
-	if stringValue(payload, "hook_event_name") != "UserPromptSubmit" {
+	if stringValue(payload, "hook_event_name") != "UserPromptSubmit" || stringValue(payload, "agent_id") != "" {
 		return nil
 	}
 	taskID := os.Getenv("MYRIAD_TASK_ID")
@@ -1221,8 +1221,11 @@ func provisionHook() error {
 	}
 	if taskWorktreeReady(task) {
 		_ = lock.Unlock()
-		if stringValue(session, "codex_thread_id") == "" && stringValue(payload, "session_id") != "" {
-			_ = updateSessionMetadata(sessionPath, sessionID, Record{"codex_thread_id": payload["session_id"]})
+		// The TUI can resume another thread while keeping this managed task.
+		if threadID := stringValue(payload, "session_id"); threadID != "" && threadID != stringValue(session, "codex_thread_id") {
+			if err := updateSessionMetadata(sessionPath, sessionID, Record{"codex_thread_id": threadID}); err != nil {
+				fmt.Fprintf(os.Stderr, "myriad: Codex thread identity unavailable: %v\n", err)
+			}
 		}
 		return printProvisionActivityContext(payload, "")
 	}
