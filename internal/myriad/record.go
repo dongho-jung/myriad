@@ -7,9 +7,8 @@ import (
 	"strings"
 )
 
-// Record is an open JSON object because lifecycle participants update disjoint
-// metadata while a task is live. Every load still requires Myriad's one current
-// schema; no legacy state is accepted.
+// Record carries JSON state and metadata. Lifecycle participants update
+// disjoint fields; schema validation belongs to each state reader.
 type Record map[string]any
 
 func cloneRecord(value Record) Record {

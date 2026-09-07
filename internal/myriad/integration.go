@@ -86,11 +86,10 @@ func runValidationProcess(command []string, directory string, environment []stri
 	cmd.Env = overlayEnvironment(environment, map[string]string{
 		"GIT_PAGER": "cat", "GIT_TERMINAL_PROMPT": "0", "PAGER": "cat",
 	})
-	// Validation is deliberately non-interactive. The foreground coding agent
-	// has already exited when lifecycle checks run, so a validation child in its
-	// own process group must never read from or write directly to the terminal.
-	// Go attaches nil stdin to /dev/null; output is relayed by this foreground
-	// launcher and retained as a bounded diagnostic tail.
+	// Validation runs in a separate process group during publish or finalization
+	// and must not compete with the foreground session for terminal input.
+	// Go attaches nil stdin to /dev/null; output is relayed through this process
+	// and retained as a bounded diagnostic tail.
 	cmd.Stdin = nil
 	cmd.Stdout = io.MultiWriter(stdout, os.Stdout)
 	cmd.Stderr = io.MultiWriter(stderr, os.Stderr)
