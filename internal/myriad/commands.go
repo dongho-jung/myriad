@@ -735,13 +735,12 @@ func activityCommand(store *Store, arguments []string) error {
 	if err != nil {
 		return err
 	}
-	context, err := observeWorkActivity(store, sessionPath, sessionID, &intent, true, true)
-	if err != nil {
+	return observeWorkActivity(store, sessionPath, sessionID, &intent, true, func(context string) error {
+		output := "Shared work activity: " + intent.Summary + "\n"
+		if context != "" {
+			output += context + "\n"
+		}
+		_, err := fmt.Fprint(os.Stdout, output)
 		return err
-	}
-	fmt.Printf("Shared work activity: %s\n", intent.Summary)
-	if context != "" {
-		fmt.Println(context)
-	}
-	return nil
+	})
 }

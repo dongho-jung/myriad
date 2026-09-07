@@ -111,21 +111,21 @@ func refreshWorkActivity(store *Store, sessionPath, sessionID string, intent *ac
 	return session, nil
 }
 
-func observeWorkActivity(store *Store, sessionPath, sessionID string, intent *activityIntent, force, deliver bool) (string, error) {
+func observeWorkActivity(store *Store, sessionPath, sessionID string, intent *activityIntent, force bool, deliver func(string) error) error {
 	lock, err := store.Lock("activity:"+sessionID, true)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer func() { _ = lock.Unlock() }()
 	session, err := refreshWorkActivity(store, sessionPath, sessionID, intent, force)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if err := syncWorkActivityNotices(store, session); err != nil {
-		return "", err
+		return err
 	}
-	if !deliver {
-		return "", nil // Advisory notices never block completion or wake an idle AI.
+	if deliver == nil {
+		return nil // Advisory notices never block completion or wake an idle AI.
 	}
-	return takeWorkActivityNotices(store, sessionID)
+	return deliverWorkActivityNotices(store, sessionID, deliver)
 }

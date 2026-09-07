@@ -1283,13 +1283,10 @@ func provisionHook() error {
 }
 
 func printProvisionActivityContext(payload Record, context string) error {
-	activity, err := activityHookContext(payload)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "myriad: work activity unavailable: %v\n", err)
-	} else if activity != "" {
-		context = strings.TrimSpace(context + "\n\n" + activity)
+	if err := writeActivityHookContext(os.Stdout, payload, context); err != nil {
+		fmt.Fprintf(os.Stderr, "myriad: work activity delivery unavailable: %v\n", err)
 	}
-	return printActivityHookContext("UserPromptSubmit", context)
+	return nil
 }
 
 func firstNonempty(values ...string) string {

@@ -2,6 +2,7 @@ package myriad
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -72,4 +73,11 @@ func readHookPayload() (Record, error) {
 		return nil, fail("cannot read hook input: %v", err)
 	}
 	return value, nil
+}
+
+func writeHookContext(output io.Writer, event, context string) error {
+	if context == "" {
+		return nil
+	}
+	return json.NewEncoder(output).Encode(Record{"hookSpecificOutput": Record{"hookEventName": event, "additionalContext": context}})
 }

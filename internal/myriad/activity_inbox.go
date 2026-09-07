@@ -115,26 +115,35 @@ func syncWorkActivityNotices(store *Store, session Record) error {
 	return writeSessionInbox(store, inbox)
 }
 
-func takeWorkActivityNotices(store *Store, sessionID string) (string, error) {
+func deliverWorkActivityNotices(store *Store, sessionID string, deliver func(string) error) error {
 	lock, err := store.Lock("inbox:"+sessionID, true)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer func() { _ = lock.Unlock() }()
 	inbox, err := readSessionInbox(store, sessionID)
 	if err != nil {
-		return "", err
+		return err
 	}
 	prompts := []string{}
+	delivered := []Record{}
 	for _, raw := range recordSlice(inbox, "messages") {
 		message := anyRecord(raw)
 		if stringValue(message, "type") == workActivityType && stringValue(message, "status") == "pending" && len(prompts) < maxActivityNoticeBatch {
 			prompts = append(prompts, stringValue(message, "prompt"))
-			message["status"], message["delivered_at"], message["delivered_via"] = "delivered", now(), "activity-hook"
+			delivered = append(delivered, message)
 		}
 	}
-	if len(prompts) == 0 {
-		return "", nil
+	// The session's activity lock and this inbox lock serialize consumers.
+	// Keep notices pending until their output has actually been written.
+	if err := deliver(strings.Join(prompts, "\n\n")); err != nil {
+		return err
 	}
-	return strings.Join(prompts, "\n\n"), writeSessionInbox(store, inbox)
+	if len(prompts) == 0 {
+		return nil
+	}
+	for _, message := range delivered {
+		message["status"], message["delivered_at"], message["delivered_via"] = "delivered", now(), "work-activity"
+	}
+	return writeSessionInbox(store, inbox)
 }

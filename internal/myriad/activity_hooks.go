@@ -96,36 +96,40 @@ func readClaudeActivitySettings(path string) ([]byte, error) {
 	return payload, err
 }
 
-func activityHookContext(payload Record) (string, error) {
+func activityHookContext(payload Record, deliver func(string) error) error {
 	if os.Getenv("MYRIAD_HARNESS") != "myriad" || os.Getenv(envAgentSessionID) == "" || stringValue(payload, "agent_id") != "" {
-		return "", nil
+		return nil
 	}
 	event := stringValue(payload, "hook_event_name")
 	if event != "UserPromptSubmit" && event != "PostToolUse" && event != "Stop" {
-		return "", nil
+		return nil
 	}
 	store, err := NewStore()
 	if err != nil {
-		return "", err
+		return err
 	}
 	sessionID, sessionPath, session, err := currentAgentSession(store, "")
 	if err != nil {
-		return "", err
+		return err
 	}
 	if stringValue(session, "task_id") == "" {
-		return "", nil
+		return nil
 	}
 	if stringValue(session, "agent") == "codex" {
 		threadID := stringValue(session, "codex_thread_id")
 		if threadID != "" && stringValue(payload, "session_id") != threadID {
-			return "", nil
+			return nil
 		}
 	}
-	context, err := observeWorkActivity(store, sessionPath, sessionID, nil, event != "PostToolUse", event != "Stop")
-	if err == nil && event == "UserPromptSubmit" {
-		context = strings.TrimSpace(activityInstructions + "\n\n" + context)
+	if event == "Stop" {
+		return observeWorkActivity(store, sessionPath, sessionID, nil, true, nil)
 	}
-	return context, err
+	return observeWorkActivity(store, sessionPath, sessionID, nil, event != "PostToolUse", func(context string) error {
+		if event == "UserPromptSubmit" {
+			context = strings.TrimSpace(activityInstructions + "\n\n" + context)
+		}
+		return deliver(context)
+	})
 }
 
 func activityHook() error {
@@ -134,24 +138,26 @@ func activityHook() error {
 		fmt.Fprintf(os.Stderr, "myriad: work activity input unavailable: %v\n", err)
 		return nil
 	}
-	context, err := activityHookContext(payload)
-	if err != nil {
-		// Awareness is advisory: hook failures must not reject user prompts or
-		// replace tool results. Keep a diagnostic without a blocking exit code.
-		fmt.Fprintf(os.Stderr, "myriad: work activity unavailable: %v\n", err)
-		return nil
+	// Activity failures are advisory and must never block the upstream hook.
+	if err := writeActivityHookContext(os.Stdout, payload, ""); err != nil {
+		fmt.Fprintf(os.Stderr, "myriad: work activity delivery unavailable: %v\n", err)
 	}
-	return printActivityHookContext(stringValue(payload, "hook_event_name"), context)
+	return nil
 }
 
-func printActivityHookContext(event, context string) error {
-	if context == "" {
-		return nil
+func writeActivityHookContext(output io.Writer, payload Record, prefix string) error {
+	event := stringValue(payload, "hook_event_name")
+	attempted := false
+	err := activityHookContext(payload, func(context string) error {
+		attempted = true
+		return writeHookContext(output, event, strings.TrimSpace(prefix+"\n\n"+context))
+	})
+	if !attempted {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "myriad: work activity unavailable: %v\n", err)
+		}
+		// First-prompt provisioning context is still needed if activity fails.
+		return writeHookContext(output, event, prefix)
 	}
-	encoded, err := json.Marshal(Record{"hookSpecificOutput": Record{"hookEventName": event, "additionalContext": context}})
-	if err != nil {
-		return err
-	}
-	fmt.Println(string(encoded))
-	return nil
+	return err
 }

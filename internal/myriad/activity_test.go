@@ -2,6 +2,7 @@ package myriad
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,7 +33,11 @@ func testActivitySession(t *testing.T, store *Store, repository, slug string) (R
 
 func testObserveActivity(t *testing.T, store *Store, session *checkoutReservation, intent *activityIntent) string {
 	t.Helper()
-	context, err := observeWorkActivity(store, session.SessionPath, session.SessionID, intent, true, true)
+	context := ""
+	err := observeWorkActivity(store, session.SessionPath, session.SessionID, intent, true, func(value string) error {
+		context = value
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +165,11 @@ func TestConcurrentWorkHooksDeliverOnce(t *testing.T) {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			context, err := observeWorkActivity(store, second.SessionPath, second.SessionID, nil, true, true)
+			context := ""
+			err := observeWorkActivity(store, second.SessionPath, second.SessionID, nil, true, func(value string) error {
+				context = value
+				return nil
+			})
 			results <- context
 			errors <- err
 		}()
@@ -181,6 +190,30 @@ func TestConcurrentWorkHooksDeliverOnce(t *testing.T) {
 	}
 	if delivered != 1 {
 		t.Fatalf("concurrent hooks delivered the same event %d times", delivered)
+	}
+}
+
+func TestWorkActivityRetriesFailedOutput(t *testing.T) {
+	store, repository := testStore(t), testRepository(t)
+	_, first := testActivitySession(t, store, repository, "first-work")
+	_, second := testActivitySession(t, store, repository, "second-work")
+	testObserveActivity(t, store, first, nil)
+	outputError := errors.New("output pipe closed")
+	err := observeWorkActivity(store, second.SessionPath, second.SessionID, nil, true, func(string) error {
+		return outputError
+	})
+	if !errors.Is(err, outputError) {
+		t.Fatalf("delivery failure = %v, want output error", err)
+	}
+	pending, err := pendingInboxMessages(store, second.SessionID, false)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("failed delivery lost its pending notice: %#v, %v", pending, err)
+	}
+	if context := testObserveActivity(t, store, second, nil); !strings.Contains(context, "first-work") {
+		t.Fatalf("failed output could not be retried: %s", context)
+	}
+	if context := testObserveActivity(t, store, second, nil); context != "" {
+		t.Fatalf("successful retry was delivered again: %s", context)
 	}
 }
 
