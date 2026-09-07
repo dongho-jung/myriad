@@ -731,9 +731,17 @@ func activityCommand(store *Store, arguments []string) error {
 	if intent.Summary == "" || len([]rune(intent.Summary)) > maxActivitySummaryRunes {
 		return fail("activity requires --summary with 1 to %d characters; optionally repeat --path with repository-relative files or directories", maxActivitySummaryRunes)
 	}
-	sessionID, sessionPath, _, err := currentAgentSession(store, "")
+	sessionID, sessionPath, session, err := currentAgentSession(store, "")
 	if err != nil {
 		return err
+	}
+	tasks, err := activityTasks(store, session)
+	if err != nil {
+		return err
+	}
+	intent.TaskID = taskForWorkingDirectory(tasks, currentDirectory())
+	if intent.TaskID == "" {
+		return fail("activity must run inside this session's managed worktree or an attached worktree")
 	}
 	return observeWorkActivity(store, sessionPath, sessionID, &intent, true, func(context string) error {
 		output := "Shared work activity: " + intent.Summary + "\n"

@@ -33,6 +33,15 @@ func testActivitySession(t *testing.T, store *Store, repository, slug string) (R
 
 func testObserveActivity(t *testing.T, store *Store, session *checkoutReservation, intent *activityIntent) string {
 	t.Helper()
+	if intent != nil {
+		metadata := Record{}
+		if err := readJSON(session.SessionPath, maxJSONBytes, &metadata); err != nil {
+			t.Fatal(err)
+		}
+		copy := *intent
+		copy.TaskID = stringValue(metadata, "task_id")
+		intent = &copy
+	}
 	context := ""
 	err := observeWorkActivity(store, session.SessionPath, session.SessionID, intent, true, func(value string) error {
 		context = value
@@ -150,6 +159,38 @@ func TestWorkActivityFindsAttachedRepositoryPeers(t *testing.T) {
 	context = testObserveActivity(t, store, first, nil)
 	if !strings.Contains(context, "secondary-work") {
 		t.Fatalf("attached session missed its secondary peer: %s", context)
+	}
+}
+
+func TestActivityCommandRequiresTheOwningWorktree(t *testing.T) {
+	store, repository := testStore(t), testRepository(t)
+	parent, session := testActivitySession(t, store, repository, "primary-work")
+	attachment := testTask(t, store, testRepository(t), createTaskOptions{TaskSlug: "attached-work"})
+	attachment["attachment_session_id"] = session.SessionID
+	attachment["attachment_parent_task_id"] = parent["task_id"]
+	if err := store.Save(attachment); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envAgentSessionID, session.SessionID)
+	t.Setenv(envAgentSessionPath, session.SessionPath)
+	t.Chdir(repository)
+	if err := activityCommand(store, []string{"--summary", "Wrong checkout"}); err == nil {
+		t.Fatal("activity accepted the original checkout instead of a managed worktree")
+	}
+	t.Chdir(stringValue(attachment, "worktree_path"))
+	if err := activityCommand(store, []string{"--summary", "Attached scope", "--path", "tracked.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	metadata := Record{}
+	if err := readJSON(session.SessionPath, maxJSONBytes, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	activities := recordMap(metadata, "work_activity")
+	if stringValue(recordMap(activities, stringValue(attachment, "task_id")), "summary") != "Attached scope" {
+		t.Fatal("activity did not select the attached repository")
+	}
+	if stringValue(recordMap(activities, stringValue(parent, "task_id")), "summary") != "primary-work" {
+		t.Fatal("attached activity overwrote the primary repository's scope")
 	}
 }
 
