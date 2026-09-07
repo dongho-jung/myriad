@@ -106,7 +106,7 @@ func refreshWorkActivity(store *Store, sessionPath, sessionID string, intent *ac
 			"paths_truncated": truncated,
 		}
 	}
-	checked := now()
+	checked := time.Now().Format(time.RFC3339Nano)
 	if err := updateSessionMetadata(sessionPath, sessionID, Record{"work_activity": activities, "work_activity_checked_at": checked}); err != nil {
 		return nil, err
 	}

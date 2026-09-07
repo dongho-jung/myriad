@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func testActivitySession(t *testing.T, store *Store, repository, slug string) (Record, *checkoutReservation) {
@@ -327,6 +328,44 @@ func TestWorkActivityDetectsFileOverlapWithoutIntentUpdate(t *testing.T) {
 	testObserveActivity(t, store, second, nil)
 	if context := testObserveActivity(t, store, first, nil); !strings.Contains(context, "Potential overlap") || !strings.Contains(context, "tracked.txt") {
 		t.Fatalf("an undeclared committed edit was not propagated: %s", context)
+	}
+}
+
+func TestWorkActivityThrottlesScansFromTheirCompletion(t *testing.T) {
+	store, repository := testStore(t), testRepository(t)
+	task, session := testActivitySession(t, store, repository, "throttled-work")
+	started := time.Now()
+	metadata, err := refreshWorkActivity(store, session.SessionPath, session.SessionID, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked, err := time.Parse(time.RFC3339Nano, stringValue(metadata, "work_activity_checked_at"))
+	if err != nil || checked.Before(started) || checked.After(time.Now()) {
+		t.Fatalf("scan completion lost precision: %s, %v", checked, err)
+	}
+	if err := os.WriteFile(filepath.Join(stringValue(task, "worktree_path"), "tracked.txt"), []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err = refreshWorkActivity(store, session.SessionPath, session.SessionID, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activity := recordMap(recordMap(metadata, "work_activity"), stringValue(task, "task_id"))
+	if len(activityStrings(activity, "changed_paths")) != 0 {
+		t.Fatal("tool hook rescanned before the throttle interval elapsed")
+	}
+	if err := updateSessionMetadata(session.SessionPath, session.SessionID, Record{
+		"work_activity_checked_at": time.Now().Add(-activityScanInterval).Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err = refreshWorkActivity(store, session.SessionPath, session.SessionID, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activity = recordMap(recordMap(metadata, "work_activity"), stringValue(task, "task_id"))
+	if !slices.Equal(activityStrings(activity, "changed_paths"), []string{"tracked.txt"}) {
+		t.Fatalf("tool hook did not refresh after the interval: %#v", activity)
 	}
 }
 
