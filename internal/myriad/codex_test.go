@@ -167,6 +167,8 @@ func TestCodexAcceptsProvisionHookConfig(t *testing.T) {
 	}
 	command := exec.Command(codex,
 		"-c", codexProvisionHookConfig("/tmp/myriad"),
+		"-c", codexActivityHookConfig("/tmp/myriad", "PostToolUse"),
+		"-c", codexActivityHookConfig("/tmp/myriad", "Stop"),
 		"-c", "tui.alternate_screen=never",
 		"--dangerously-bypass-hook-trust", "features", "list",
 	)

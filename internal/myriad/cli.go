@@ -26,6 +26,8 @@ func Run(arguments []string) int {
 			return finish(code, err)
 		case internalInboxHook:
 			return finish(0, inboxHook())
+		case internalActivityHook:
+			return finish(0, activityHook())
 		case internalProvision:
 			return finish(0, provisionHook())
 		}
@@ -69,6 +71,8 @@ func Run(arguments []string) int {
 		}
 	case "context":
 		err = runContextCommand(store, arguments[1:])
+	case "activity":
+		err = activityCommand(store, arguments[1:])
 	case "list":
 		printTaskList(store)
 	case "status":
@@ -482,9 +486,11 @@ Usage:
   myriad attach PATH                  attach another repository
   myriad context --jira KEY...        set Jira display contexts
   myriad context --pr NUMBER...       set pull-request display contexts
+  myriad activity --summary TEXT     share work intent; repeat --path PATH
   myriad list | status [TASK_ID]      inspect local lifecycle state
   myriad diagnose TASK_ID             dump refs, processes, blockers, and logs
-  myriad inbox | handoff EVENT_ID     coordinate queued integration
+  myriad inbox                        inspect work and integration notices
+  myriad handoff EVENT_ID             coordinate queued integration
   myriad integrate TASK_ID            retry integration
   myriad recover TASK_ID              resume preserved work
   myriad cleanup TASK_ID|--all        remove safe inactive worktrees

@@ -69,6 +69,16 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 		}
 	}
 
+	if stringValue(metadata, "task_id") != "" && commandExecutableIndex(command, "claude") >= 0 {
+		launcher, hookErr := materializeCodexHookRuntime(store)
+		if hookErr == nil {
+			command, hookErr = claudeActivityCommand(command, launcher)
+		}
+		if hookErr != nil {
+			return 127, hookErr
+		}
+	}
+
 	outputRelay, err := prepareCodexOutputRelay(command, os.Stdin, os.Stdout)
 	if err != nil {
 		if control != nil {
@@ -164,6 +174,7 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 			if notificationRequested || (!nextNotificationRetry.IsZero() && time.Now().After(nextNotificationRetry)) {
 				notificationRequested = false
 				pending, pendingErr := pendingInboxMessages(store, sessionID, false)
+				pending = actionableInboxMessages(pending)
 				if pendingErr == nil && len(pending) > 0 {
 					if control != nil && !controlDone {
 						if err := deliverPendingCodexNotifications(store, sessionID, controlSocket, workingDirectory); err != nil {

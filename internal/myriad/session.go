@@ -365,6 +365,16 @@ func activeNotificationSessions(store *Store, repository string) []Record {
 	if err != nil {
 		return nil
 	}
+	result := []Record{}
+	for _, session := range activeOwnedSessions(store) {
+		if stringValue(session, "git_common_dir") == common {
+			result = append(result, session)
+		}
+	}
+	return result
+}
+
+func activeOwnedSessions(store *Store) []Record {
 	entries, _ := os.ReadDir(store.Sessions)
 	result := []Record{}
 	for _, entry := range entries {
@@ -375,7 +385,8 @@ func activeNotificationSessions(store *Store, repository string) []Record {
 		}
 		protocol, _ := intValue(value["notification_protocol"])
 		process := recordMap(value, "process")
-		if protocol != notificationProtocol || stringValue(value, "git_common_dir") != common || process == nil || stringValue(process, "role") != "lock-supervisor" {
+		common := stringValue(value, "git_common_dir")
+		if protocol != notificationProtocol || common == "" || process == nil || stringValue(process, "role") != "lock-supervisor" {
 			continue
 		}
 		state := stringValue(value, "notification_state")

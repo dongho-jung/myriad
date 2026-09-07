@@ -505,6 +505,11 @@ func codexProvisionHookConfig(launcher string) string {
 	return fmt.Sprintf(`hooks.UserPromptSubmit=[{ hooks = [{ type = "command", command = %s, timeout = 60, statusMessage = "Selecting managed checkout" }] }]`, command)
 }
 
+func codexActivityHookConfig(launcher, event string) string {
+	command, _ := json.Marshal(hookCommand(internalActivityHook, launcher))
+	return fmt.Sprintf(`hooks.%s=[{ hooks = [{ type = "command", command = %s, timeout = 10 }] }]`, event, command)
+}
+
 func codexAppServerInheritedOptions(agentCommand []string, executable int) []string {
 	inherited := []string{}
 	arguments := agentCommand[executable+1:]
@@ -553,9 +558,11 @@ func codexAppServerCommand(agentCommand []string, socketPath string, provisionHo
 	}
 	result := append([]string{}, agentCommand[:executable+1]...)
 	result = append(result, codexAppServerInheritedOptions(agentCommand, executable)...)
-	if provisionHook {
+	if provisionHook || hookLauncher != "" {
 		result = append(result,
 			"-c", codexProvisionHookConfig(hookLauncher),
+			"-c", codexActivityHookConfig(hookLauncher, "PostToolUse"),
+			"-c", codexActivityHookConfig(hookLauncher, "Stop"),
 			"--dangerously-bypass-hook-trust",
 		)
 	}
@@ -855,7 +862,7 @@ func startCodexAppServer(store *Store, command []string, socketPath string, trus
 		return nil, command, nil
 	}
 	hookLauncher := ""
-	if provisionHook {
+	if provisionHook || (os.Getenv("MYRIAD_HARNESS") == "myriad" && os.Getenv("MYRIAD_TASK_ID") != "") {
 		hookLauncher, err = materializeCodexHookRuntime(store)
 		if err != nil {
 			return nil, nil, err
@@ -1208,6 +1215,9 @@ func deliverPendingCodexNotifications(store *Store, sessionID, socketPath, worki
 		return err
 	}
 	for _, message := range messages {
+		if stringValue(message, "type") == workActivityType {
+			continue // Work notices use hook context, never a synthetic user turn.
+		}
 		if err := deliverCodexPrompt(socketPath, workingDirectory, stringValue(message, "prompt")); err != nil {
 			return err
 		}
@@ -1263,7 +1273,10 @@ func provisionHook() error {
 	}
 	if taskWorktreeReady(task) {
 		_ = lock.Unlock()
-		return nil
+		if stringValue(session, "codex_thread_id") == "" && stringValue(payload, "session_id") != "" {
+			_ = updateSessionMetadata(sessionPath, sessionID, Record{"codex_thread_id": payload["session_id"]})
+		}
+		return printProvisionActivityContext(payload, "")
 	}
 	owner, taskOwner := recordMap(session, "process"), recordMap(task, "process")
 	if owner == nil || taskOwner == nil || owner["pid"] != taskOwner["pid"] || owner["start"] != taskOwner["start"] || !processAlive(owner) {
@@ -1318,10 +1331,17 @@ func provisionHook() error {
 		}
 	}
 	contextText := fmt.Sprintf("Myriad provisioned the managed checkout before this turn: worktree %s, branch %s. Inspect, edit, validate, and commit repository work there.", stringValue(task, "worktree_path"), branch)
-	output := Record{"hookSpecificOutput": Record{"hookEventName": "UserPromptSubmit", "additionalContext": contextText}}
-	encoded, _ := json.Marshal(output)
-	fmt.Println(string(encoded))
-	return nil
+	return printProvisionActivityContext(payload, contextText)
+}
+
+func printProvisionActivityContext(payload Record, context string) error {
+	activity, err := activityHookContext(payload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "myriad: work activity unavailable: %v\n", err)
+	} else if activity != "" {
+		context = strings.TrimSpace(context + "\n\n" + activity)
+	}
+	return printActivityHookContext("UserPromptSubmit", context)
 }
 
 func readHookPayload() (Record, error) {

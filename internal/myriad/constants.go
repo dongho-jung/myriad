@@ -33,11 +33,12 @@ const (
 
 	handoffExitCode = 75
 
-	internalSupervise = "__supervise"
-	internalValidate  = "__validate"
-	internalLease     = "__lease"
-	internalInboxHook = "__inbox-hook"
-	internalProvision = "__provision-hook"
+	internalSupervise    = "__supervise"
+	internalValidate     = "__validate"
+	internalLease        = "__lease"
+	internalInboxHook    = "__inbox-hook"
+	internalActivityHook = "__activity-hook"
+	internalProvision    = "__provision-hook"
 
 	envInheritedLockFDs   = "MYRIAD_INHERITED_LOCK_FDS"
 	envLockSessionPath    = "MYRIAD_LOCK_SESSION_PATH"

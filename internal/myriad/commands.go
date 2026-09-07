@@ -641,7 +641,12 @@ func inboxHook() error {
 	}
 	prompts := []string{}
 	for _, message := range pending {
-		prompts = append(prompts, stringValue(message, "prompt"))
+		if stringValue(message, "type") != workActivityType {
+			prompts = append(prompts, stringValue(message, "prompt"))
+		}
+	}
+	if len(prompts) == 0 {
+		return nil
 	}
 	prompt := strings.Join(prompts, "\n\n")
 	var output Record
@@ -653,7 +658,9 @@ func inboxHook() error {
 	encoded, _ := json.Marshal(output)
 	fmt.Println(string(encoded))
 	for _, message := range pending {
-		_, _ = updateInboxEvent(store, sessionID, stringValue(message, "id"), "delivered", "claude-"+eventName)
+		if stringValue(message, "type") != workActivityType {
+			_, _ = updateInboxEvent(store, sessionID, stringValue(message, "id"), "delivered", "claude-"+eventName)
+		}
 	}
 	return nil
 }

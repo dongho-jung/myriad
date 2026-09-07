@@ -175,6 +175,16 @@ func pendingInboxMessages(store *Store, sessionID string, includeDelivered bool)
 	return result, nil
 }
 
+func actionableInboxMessages(messages []Record) []Record {
+	result := []Record{}
+	for _, message := range messages {
+		if stringValue(message, "type") != workActivityType {
+			result = append(result, message)
+		}
+	}
+	return result
+}
+
 func updateInboxEvent(store *Store, sessionID, eventID, status, detail string) (Record, error) {
 	allowed := map[string]map[string]bool{
 		"delivered": {"pending": true, "delivered": true},
@@ -297,7 +307,7 @@ func acceptedHandoffTasks(store *Store, sessionID string) ([]string, error) {
 	authorized := false
 	for _, raw := range recordSlice(inbox, "messages") {
 		message, ok := toAnyMap(raw)
-		if ok && message["status"] == "accepted" {
+		if ok && message["type"] == "integration_ready" && message["status"] == "accepted" {
 			authorized = true
 			break
 		}
@@ -325,7 +335,7 @@ func acceptedHandoffTasks(store *Store, sessionID string) ([]string, error) {
 	result := []string{}
 	for _, raw := range recordSlice(inbox, "messages") {
 		message, ok := toAnyMap(raw)
-		if ok && message["status"] == "accepted" {
+		if ok && message["type"] == "integration_ready" && message["status"] == "accepted" {
 			if taskID, ok := message["task_id"].(string); ok {
 				result = append(result, taskID)
 			}
