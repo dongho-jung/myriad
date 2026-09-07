@@ -1,12 +1,10 @@
 package myriad
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -453,54 +451,7 @@ func resolveCodexRecoveryCommand(command []string, threadID string) ([]string, e
 	return result, nil
 }
 
-func materializeCodexHookRuntime(store *Store) (string, error) {
-	executable, err := executablePath()
-	if err != nil {
-		return "", err
-	}
-	payload, err := os.ReadFile(executable)
-	if err != nil {
-		return "", err
-	}
-	digest := sha256Hex(payload)
-	runtimeDirectory := filepath.Join(store.HookRuntimes, digest)
-	if err := ensurePrivateDirectory(runtimeDirectory); err != nil {
-		return "", err
-	}
-	destination := filepath.Join(runtimeDirectory, "myriad")
-	if existing, err := readRegular(destination, int64(len(payload))); err == nil {
-		if !bytes.Equal(existing, payload) {
-			return "", fail("immutable hook runtime changed unexpectedly: %s", destination)
-		}
-		info, err := os.Lstat(destination)
-		if err != nil {
-			return "", err
-		}
-		if info.Mode().Perm() != 0o700 {
-			if err := atomicWrite(destination, payload, 0o700); err != nil {
-				return "", err
-			}
-		}
-	} else if errors.Is(err, os.ErrNotExist) {
-		if err := atomicWrite(destination, payload, 0o700); err != nil {
-			return "", err
-		}
-	} else {
-		return "", err
-	}
-	return destination, nil
-}
-
-func hookCommand(subcommand, launcher string) string {
-	values := []string{launcher, subcommand}
-	quoted := make([]string, len(values))
-	for index, value := range values {
-		quoted[index] = "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
-	}
-	return strings.Join(quoted, " ")
-}
-
-func codexProvisionHookConfig(launcher string) string {
+func codexPromptHookConfig(launcher string) string {
 	command, _ := json.Marshal(hookCommand(internalProvision, launcher))
 	return fmt.Sprintf(`hooks.UserPromptSubmit=[{ hooks = [{ type = "command", command = %s, timeout = 60, statusMessage = "Selecting managed checkout" }] }]`, command)
 }
@@ -551,16 +502,16 @@ func codexAppServerInheritedOptions(agentCommand []string, executable int) []str
 	return inherited
 }
 
-func codexAppServerCommand(agentCommand []string, socketPath string, provisionHook bool, hookLauncher string) ([]string, error) {
+func codexAppServerCommand(agentCommand []string, socketPath, hookLauncher string) ([]string, error) {
 	executable := commandExecutableIndex(agentCommand, "codex")
 	if executable < 0 {
 		return nil, fail("Codex App Server command requires a codex executable")
 	}
 	result := append([]string{}, agentCommand[:executable+1]...)
 	result = append(result, codexAppServerInheritedOptions(agentCommand, executable)...)
-	if provisionHook || hookLauncher != "" {
+	if hookLauncher != "" {
 		result = append(result,
-			"-c", codexProvisionHookConfig(hookLauncher),
+			"-c", codexPromptHookConfig(hookLauncher),
 			"-c", codexActivityHookConfig(hookLauncher, "PostToolUse"),
 			"-c", codexActivityHookConfig(hookLauncher, "Stop"),
 			"--dangerously-bypass-hook-trust",
@@ -863,12 +814,12 @@ func startCodexAppServer(store *Store, command []string, socketPath string, trus
 	}
 	hookLauncher := ""
 	if provisionHook || (os.Getenv("MYRIAD_HARNESS") == "myriad" && os.Getenv("MYRIAD_TASK_ID") != "") {
-		hookLauncher, err = materializeCodexHookRuntime(store)
+		hookLauncher, err = materializeHookRuntime(store)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
-	serverCommand, err := codexAppServerCommand(agentCommand, socketPath, provisionHook, hookLauncher)
+	serverCommand, err := codexAppServerCommand(agentCommand, socketPath, hookLauncher)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1214,10 +1165,7 @@ func deliverPendingCodexNotifications(store *Store, sessionID, socketPath, worki
 	if err != nil {
 		return err
 	}
-	for _, message := range messages {
-		if stringValue(message, "type") == workActivityType {
-			continue // Work notices use hook context, never a synthetic user turn.
-		}
+	for _, message := range actionableInboxMessages(messages) {
 		if err := deliverCodexPrompt(socketPath, workingDirectory, stringValue(message, "prompt")); err != nil {
 			return err
 		}
@@ -1342,24 +1290,6 @@ func printProvisionActivityContext(payload Record, context string) error {
 		context = strings.TrimSpace(context + "\n\n" + activity)
 	}
 	return printActivityHookContext("UserPromptSubmit", context)
-}
-
-func readHookPayload() (Record, error) {
-	payload, err := io.ReadAll(io.LimitReader(os.Stdin, maxHookInputBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(payload) > maxHookInputBytes {
-		return nil, fail("hook input is too large")
-	}
-	value := Record{}
-	if len(strings.TrimSpace(string(payload))) == 0 {
-		return value, nil
-	}
-	if err := decodeJSON(payload, &value); err != nil {
-		return nil, fail("cannot read hook input: %v", err)
-	}
-	return value, nil
 }
 
 func firstNonempty(values ...string) string {

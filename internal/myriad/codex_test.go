@@ -166,7 +166,7 @@ func TestCodexAcceptsProvisionHookConfig(t *testing.T) {
 		t.Skip("codex is not installed")
 	}
 	command := exec.Command(codex,
-		"-c", codexProvisionHookConfig("/tmp/myriad"),
+		"-c", codexPromptHookConfig("/tmp/myriad"),
 		"-c", codexActivityHookConfig("/tmp/myriad", "PostToolUse"),
 		"-c", codexActivityHookConfig("/tmp/myriad", "Stop"),
 		"-c", "tui.alternate_screen=never",
@@ -183,7 +183,7 @@ func TestCodexAppServerUnixTransport(t *testing.T) {
 		t.Skip("codex is not installed")
 	}
 	socket := filepath.Join(t.TempDir(), "app-server.sock")
-	serverCommand, err := codexAppServerCommand([]string{"codex"}, socket, true, "/tmp/myriad-protocol-test")
+	serverCommand, err := codexAppServerCommand([]string{"codex"}, socket, "/tmp/myriad-protocol-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,7 +297,7 @@ func TestFreshManagedCodexAppServerDoesNotResumeEmptyThread(t *testing.T) {
 func TestCodexProvisionServerUsesPinnedHookBypass(t *testing.T) {
 	command, err := codexAppServerCommand(
 		[]string{"codex", "--dangerously-bypass-approvals-and-sandbox"},
-		"/tmp/myriad-test.sock", true, "/state/hooks/hash/myriad",
+		"/tmp/myriad-test.sock", "/state/hooks/hash/myriad",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -348,21 +348,21 @@ func TestCodexHookRuntimeRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(executable, filepath.Join(directory, "myriad")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := materializeCodexHookRuntime(store); err == nil {
+	if _, err := materializeHookRuntime(store); err == nil {
 		t.Fatal("symlink hook runtime was trusted")
 	}
 }
 
 func TestCodexHookRuntimeRestoresExecutableMode(t *testing.T) {
 	store := testStore(t)
-	path, err := materializeCodexHookRuntime(store)
+	path, err := materializeHookRuntime(store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	path, err = materializeCodexHookRuntime(store)
+	path, err = materializeHookRuntime(store)
 	if err != nil {
 		t.Fatal(err)
 	}

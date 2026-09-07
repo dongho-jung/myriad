@@ -95,3 +95,63 @@ func readClaudeActivitySettings(path string) ([]byte, error) {
 	}
 	return payload, err
 }
+
+func activityHookContext(payload Record) (string, error) {
+	if os.Getenv("MYRIAD_HARNESS") != "myriad" || os.Getenv(envAgentSessionID) == "" || stringValue(payload, "agent_id") != "" {
+		return "", nil
+	}
+	event := stringValue(payload, "hook_event_name")
+	if event != "UserPromptSubmit" && event != "PostToolUse" && event != "Stop" {
+		return "", nil
+	}
+	store, err := NewStore()
+	if err != nil {
+		return "", err
+	}
+	sessionID, sessionPath, session, err := currentAgentSession(store, "")
+	if err != nil {
+		return "", err
+	}
+	if stringValue(session, "task_id") == "" {
+		return "", nil
+	}
+	if stringValue(session, "agent") == "codex" {
+		threadID := stringValue(session, "codex_thread_id")
+		if threadID != "" && stringValue(payload, "session_id") != threadID {
+			return "", nil
+		}
+	}
+	context, err := observeWorkActivity(store, sessionPath, sessionID, nil, event != "PostToolUse", event != "Stop")
+	if err == nil && event == "UserPromptSubmit" {
+		context = strings.TrimSpace(activityInstructions + "\n\n" + context)
+	}
+	return context, err
+}
+
+func activityHook() error {
+	payload, err := readHookPayload()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "myriad: work activity input unavailable: %v\n", err)
+		return nil
+	}
+	context, err := activityHookContext(payload)
+	if err != nil {
+		// Awareness is advisory: hook failures must not reject user prompts or
+		// replace tool results. Keep a diagnostic without a blocking exit code.
+		fmt.Fprintf(os.Stderr, "myriad: work activity unavailable: %v\n", err)
+		return nil
+	}
+	return printActivityHookContext(stringValue(payload, "hook_event_name"), context)
+}
+
+func printActivityHookContext(event, context string) error {
+	if context == "" {
+		return nil
+	}
+	encoded, err := json.Marshal(Record{"hookSpecificOutput": Record{"hookEventName": event, "additionalContext": context}})
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(encoded))
+	return nil
+}

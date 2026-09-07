@@ -636,17 +636,13 @@ func inboxHook() error {
 		return err
 	}
 	pending, err := pendingInboxMessages(store, sessionID, false)
+	pending = actionableInboxMessages(pending)
 	if err != nil || len(pending) == 0 {
 		return err
 	}
 	prompts := []string{}
 	for _, message := range pending {
-		if stringValue(message, "type") != workActivityType {
-			prompts = append(prompts, stringValue(message, "prompt"))
-		}
-	}
-	if len(prompts) == 0 {
-		return nil
+		prompts = append(prompts, stringValue(message, "prompt"))
 	}
 	prompt := strings.Join(prompts, "\n\n")
 	var output Record
@@ -658,9 +654,7 @@ func inboxHook() error {
 	encoded, _ := json.Marshal(output)
 	fmt.Println(string(encoded))
 	for _, message := range pending {
-		if stringValue(message, "type") != workActivityType {
-			_, _ = updateInboxEvent(store, sessionID, stringValue(message, "id"), "delivered", "claude-"+eventName)
-		}
+		_, _ = updateInboxEvent(store, sessionID, stringValue(message, "id"), "delivered", "claude-"+eventName)
 	}
 	return nil
 }
@@ -715,4 +709,39 @@ func cleanupCommand(store *Store, taskID string, all bool) int {
 		return 2
 	}
 	return 0
+}
+
+func activityCommand(store *Store, arguments []string) error {
+	intent := activityIntent{}
+	for index := 0; index < len(arguments); index++ {
+		option := arguments[index]
+		if option != "--summary" && option != "--path" {
+			return fail("unknown activity option: %s", option)
+		}
+		value, err := requireOptionValue(arguments, &index, option)
+		if err != nil {
+			return err
+		}
+		if option == "--summary" {
+			intent.Summary = strings.Join(strings.Fields(value), " ")
+		} else {
+			intent.Paths = append(intent.Paths, value)
+		}
+	}
+	if intent.Summary == "" || len([]rune(intent.Summary)) > maxActivitySummaryRunes {
+		return fail("activity requires --summary with 1 to %d characters; optionally repeat --path with repository-relative files or directories", maxActivitySummaryRunes)
+	}
+	sessionID, sessionPath, _, err := currentAgentSession(store, "")
+	if err != nil {
+		return err
+	}
+	context, err := observeWorkActivity(store, sessionPath, sessionID, &intent, true, true)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Shared work activity: %s\n", intent.Summary)
+	if context != "" {
+		fmt.Println(context)
+	}
+	return nil
 }
