@@ -3,6 +3,7 @@ package myriad
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -382,8 +383,68 @@ func TestActivityPathsStayWithinTheirRepository(t *testing.T) {
 	}
 	a := Record{"intent_paths": []any{"auth"}}
 	b := Record{"intent_paths": []any{"authorization/file.go"}}
-	if paths := activityOverlap(a, b); len(paths) != 0 {
+	if paths, _ := activityOverlap(a, b); len(paths) != 0 {
 		t.Fatalf("directory prefix produced a false overlap: %#v", paths)
+	}
+}
+
+func TestWorkActivityReportsIncompleteScopes(t *testing.T) {
+	paths := make([]string, maxActivityPaths)
+	for index := range paths {
+		paths[index] = fmt.Sprintf("auth/%03d.go", index)
+	}
+	peer := Record{"session_id": "peer", "agent": "custom"}
+	activity := Record{
+		"task_id": "peer-task", "intent_paths": []any{"auth/extra.go"}, "changed_paths": stringsToAny(paths),
+	}
+	own := Record{"intent_paths": []any{"auth"}}
+	notice := workActivityNotice("receiver", peer, activity, []Record{own})
+	if len(activityStrings(notice, "overlap_paths")) != maxActivityPaths || !boolValue(notice, "paths_truncated", false) {
+		t.Fatalf("bounded overlap was presented as complete: %#v", notice)
+	}
+	activity["changed_paths"] = []any{}
+	own["paths_truncated"] = true
+	notice = workActivityNotice("receiver", peer, activity, []Record{own})
+	if !boolValue(notice, "paths_truncated", false) {
+		t.Fatal("notice ignored missing paths from the receiver's scope")
+	}
+	own["paths_truncated"] = false
+	activity["paths_truncated"] = true
+	notice = workActivityNotice("receiver", peer, activity, []Record{own})
+	if !boolValue(notice, "paths_truncated", false) {
+		t.Fatal("notice ignored missing paths from the peer's scope")
+	}
+	activity["paths_truncated"] = false
+	activity["changed_paths"] = stringsToAny(paths[:maxActivityNoticePaths+1])
+	notice = workActivityNotice("receiver", peer, activity, []Record{own})
+	_, payload, found := strings.Cut(stringValue(notice, "prompt"), "\n")
+	preview := Record{}
+	if !found || decodeJSON([]byte(payload), &preview) != nil {
+		t.Fatal("notice has no JSON preview")
+	}
+	if !boolValue(preview, "paths_truncated", false) || len(activityStrings(preview, "changed_paths")) != maxActivityNoticePaths {
+		t.Fatalf("shortened preview was presented as complete: %#v", preview)
+	}
+	if count, _ := intValue(preview["changed_paths_count"]); count != maxActivityNoticePaths+1 {
+		t.Fatalf("preview lost its stored path count: %#v", preview)
+	}
+}
+
+func TestWorkActivityCombinesOwnedRepositoryScopes(t *testing.T) {
+	peer := Record{"session_id": "peer", "agent": "custom"}
+	activity := Record{"task_id": "peer-task", "intent_paths": []any{"auth"}}
+	own := []Record{
+		{"intent_paths": []any{"auth/login.go"}},
+		{"intent_paths": []any{"auth/refresh.go"}},
+	}
+	first := workActivityNotice("receiver", peer, activity, own)
+	slices.Reverse(own)
+	second := workActivityNotice("receiver", peer, activity, own)
+	if !slices.Equal(activityStrings(first, "overlap_paths"), []string{"auth/login.go", "auth/refresh.go"}) {
+		t.Fatalf("notice lost an owned repository scope: %#v", first)
+	}
+	if first["fingerprint"] != second["fingerprint"] {
+		t.Fatal("metadata iteration order changed the notice fingerprint")
 	}
 }
 

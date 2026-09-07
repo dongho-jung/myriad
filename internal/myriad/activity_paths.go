@@ -75,7 +75,7 @@ func activityScope(activity Record) []string {
 	return append(activityStrings(activity, "intent_paths"), activityStrings(activity, "changed_paths")...)
 }
 
-func activityOverlap(own, peer Record) []string {
+func activityOverlap(own, peer Record) ([]string, bool) {
 	result := []string{}
 	for _, a := range activityScope(own) {
 		for _, b := range activityScope(peer) {
@@ -87,6 +87,5 @@ func activityOverlap(own, peer Record) []string {
 			}
 		}
 	}
-	paths, _ := boundedActivityPaths(result)
-	return paths
+	return boundedActivityPaths(result)
 }
