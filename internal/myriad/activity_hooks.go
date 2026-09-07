@@ -5,95 +5,51 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
-// Claude merges CLI settings with its normal settings layers. Fold any
-// caller-supplied --settings into the same object so their hooks survive too.
-func claudeActivityCommand(command []string, launcher string) ([]string, error) {
+// A session plugin adds hooks without interpreting or rewriting caller settings.
+func claudeActivityCommand(command []string, plugin string) []string {
 	executable := commandExecutableIndex(command, "claude")
 	if executable < 0 {
-		return command, nil
+		return command
 	}
-	settings := Record{}
 	result := append([]string{}, command[:executable+1]...)
-	arguments := command[executable+1:]
-	for index := 0; index < len(arguments); index++ {
-		argument := arguments[index]
-		if argument == "--" {
-			result = append(result, arguments[index:]...)
-			break
-		}
-		value, inline := strings.CutPrefix(argument, "--settings=")
-		if argument != "--settings" && !inline {
-			result = append(result, argument)
-			continue
-		}
-		if !inline {
-			index++
-			if index >= len(arguments) {
-				return nil, fail("--settings requires a value")
-			}
-			value = arguments[index]
-		}
-		payload := []byte(value)
-		if !strings.HasPrefix(strings.TrimSpace(value), "{") {
-			var err error
-			payload, err = readClaudeActivitySettings(value)
-			if err != nil {
-				return nil, fmt.Errorf("cannot read Claude settings: %w", err)
-			}
-		}
-		if err := decodeJSON(payload, &settings); err != nil || settings == nil {
-			return nil, fail("Claude settings must be a JSON object")
-		}
-	}
-	hooks := recordMap(settings, "hooks")
-	if hooks == nil {
-		if settings["hooks"] != nil {
-			return nil, fail("Claude hooks settings must be a JSON object")
-		}
-		hooks = Record{}
-	}
-	for _, event := range []string{"UserPromptSubmit", "PostToolUse", "Stop"} {
-		existing := recordSlice(hooks, event)
-		if hooks[event] != nil && existing == nil {
-			return nil, fail("Claude %s hooks must be a JSON array", event)
-		}
-		hooks[event] = append(existing, Record{"hooks": []any{Record{
-			"type": "command", "command": hookCommand(internalActivityHook, launcher), "timeout": 10,
-		}}})
-	}
-	settings["hooks"] = hooks
-	encoded, err := json.Marshal(settings)
-	if err != nil {
-		return nil, err
-	}
-	// Insert options before any positional prompt or option terminator.
-	result = append(result[:executable+1], append([]string{"--settings", string(encoded)}, result[executable+1:]...)...)
-	return result, nil
+	result = append(result, "--plugin-dir", plugin)
+	return append(result, command[executable+1:]...)
 }
 
-func readClaudeActivitySettings(path string) ([]byte, error) {
-	// Caller-selected settings can be symlinked or owned by an administrator;
-	// they are not private Myriad state files.
-	file, err := os.Open(path)
+func materializeClaudeActivityPlugin(store *Store) (string, error) {
+	launcher, err := materializeHookRuntime(store)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
+	root := filepath.Dir(launcher)
+	hooks := Record{}
+	for _, event := range []string{"UserPromptSubmit", "PostToolUse", "Stop"} {
+		hooks[event] = []any{Record{"hooks": []any{Record{
+			"type": "command", "command": hookCommand(internalActivityHook, launcher), "timeout": 10,
+		}}}}
 	}
-	if !info.Mode().IsRegular() {
-		return nil, fail("Claude settings must be a regular file")
+	files := map[string]Record{
+		".claude-plugin/plugin.json": {"name": "myriad-work-activity", "description": "Work activity for this managed Myriad session"},
+		"hooks/hooks.json":           {"hooks": hooks},
 	}
-	payload, err := io.ReadAll(io.LimitReader(file, maxJSONBytes+1))
-	if int64(len(payload)) > maxJSONBytes {
-		return nil, fail("Claude settings are too large")
+	for name, content := range files {
+		path := filepath.Join(root, name)
+		if err := ensurePrivateDirectory(filepath.Dir(path)); err != nil {
+			return "", err
+		}
+		payload, err := json.Marshal(content)
+		if err != nil {
+			return "", err
+		}
+		if err := materializeHookFile(path, payload, 0o600); err != nil {
+			return "", err
+		}
 	}
-	return payload, err
+	return root, nil
 }
 
 func activityHookContext(payload Record, deliver func(string) error) error {

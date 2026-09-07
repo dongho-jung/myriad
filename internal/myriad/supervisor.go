@@ -70,13 +70,11 @@ func superviseAgent(command []string, descriptors []int, sessionPath, sessionID 
 	}
 
 	if stringValue(metadata, "task_id") != "" && commandExecutableIndex(command, "claude") >= 0 {
-		launcher, hookErr := materializeHookRuntime(store)
-		if hookErr == nil {
-			command, hookErr = claudeActivityCommand(command, launcher)
-		}
+		plugin, hookErr := materializeClaudeActivityPlugin(store)
 		if hookErr != nil {
 			return 127, hookErr
 		}
+		command = claudeActivityCommand(command, plugin)
 	}
 
 	outputRelay, err := prepareCodexOutputRelay(command, os.Stdin, os.Stdout)

@@ -349,26 +349,53 @@ func TestActivityPathsStayWithinTheirRepository(t *testing.T) {
 }
 
 func TestClaudeActivityHooksPreserveSettingsAndArguments(t *testing.T) {
-	settings := `{"env":{"KEEP":"yes"},"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"existing-hook"}]}]}}`
-	for _, value := range []string{settings, filepath.Join(t.TempDir(), "settings.json")} {
-		if value != settings {
-			if err := os.WriteFile(value, []byte(settings), 0o600); err != nil {
-				t.Fatal(err)
-			}
+	for _, arguments := range [][]string{
+		{"--settings", "/a symlink/settings.json", "--", "a prompt"},
+		{"--append-system-prompt", "--settings", "--settings={\"env\":{\"KEEP\":\"yes\"}}", "prompt"},
+		{"--plugin-dir", "/another/plugin", "--settings", "{\"hooks\":{}}"},
+	} {
+		original := append([]string{"env", "IS_DEMO=1", "claude"}, arguments...)
+		command := claudeActivityCommand(original, "/pinned/plugin")
+		if !slices.Equal(command[:5], []string{"env", "IS_DEMO=1", "claude", "--plugin-dir", "/pinned/plugin"}) || !slices.Equal(command[5:], arguments) {
+			t.Fatalf("hook integration rewrote caller arguments: %#v", command)
 		}
-		command, err := claudeActivityCommand([]string{"env", "IS_DEMO=1", "claude", "--settings", value, "--", "a prompt"}, "/path/with a 'quote/myriad")
-		if err != nil {
-			t.Fatal(err)
+		if !slices.Equal(original[3:], arguments) {
+			t.Fatal("hook integration mutated its input command")
 		}
-		if !slices.Equal(command[:4], []string{"env", "IS_DEMO=1", "claude", "--settings"}) || !slices.Equal(command[len(command)-2:], []string{"--", "a prompt"}) {
-			t.Fatalf("hook options changed the command: %#v", command)
+	}
+}
+
+func TestClaudeActivityPluginIsPinnedAndValid(t *testing.T) {
+	store := testStore(t)
+	root, err := materializeClaudeActivityPlugin(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claude, err := exec.LookPath("claude"); err == nil {
+		command := exec.Command(claude, "plugin", "validate", root)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("Claude rejected its activity plugin: %v\n%s", err, output)
 		}
-		parsed := Record{}
-		if err := json.Unmarshal([]byte(command[4]), &parsed); err != nil {
-			t.Fatal(err)
+	}
+	path := filepath.Join(root, "hooks", "hooks.json")
+	hooks := Record{}
+	if err := readJSON(path, maxJSONBytes, &hooks); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []string{"UserPromptSubmit", "PostToolUse", "Stop"} {
+		entries := recordSlice(recordMap(hooks, "hooks"), event)
+		if len(entries) != 1 {
+			t.Fatalf("plugin is missing %s", event)
 		}
-		if stringValue(recordMap(parsed, "env"), "KEEP") != "yes" || len(recordSlice(recordMap(parsed, "hooks"), "PostToolUse")) != 2 {
-			t.Fatalf("caller settings or hooks were overwritten: %s", command[4])
+		command := anyRecord(recordSlice(anyRecord(entries[0]), "hooks")[0])
+		if stringValue(command, "command") != hookCommand(internalActivityHook, filepath.Join(root, "myriad")) {
+			t.Fatalf("plugin hook does not use its pinned binary: %#v", command)
 		}
+	}
+	if err := os.WriteFile(path, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := materializeClaudeActivityPlugin(store); err == nil {
+		t.Fatal("tampered plugin hooks were silently replaced")
 	}
 }

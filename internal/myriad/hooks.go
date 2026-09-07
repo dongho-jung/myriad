@@ -25,27 +25,28 @@ func materializeHookRuntime(store *Store) (string, error) {
 		return "", err
 	}
 	destination := filepath.Join(runtimeDirectory, "myriad")
-	if existing, err := readRegular(destination, int64(len(payload))); err == nil {
-		if !bytes.Equal(existing, payload) {
-			return "", fail("immutable hook runtime changed unexpectedly: %s", destination)
-		}
-		info, err := os.Lstat(destination)
-		if err != nil {
-			return "", err
-		}
-		if info.Mode().Perm() != 0o700 {
-			if err := atomicWrite(destination, payload, 0o700); err != nil {
-				return "", err
-			}
-		}
-	} else if errors.Is(err, os.ErrNotExist) {
-		if err := atomicWrite(destination, payload, 0o700); err != nil {
-			return "", err
-		}
-	} else {
+	if err := materializeHookFile(destination, payload, 0o700); err != nil {
 		return "", err
 	}
 	return destination, nil
+}
+
+func materializeHookFile(destination string, payload []byte, mode os.FileMode) error {
+	if existing, err := readRegular(destination, int64(len(payload))); err == nil {
+		if !bytes.Equal(existing, payload) {
+			return fail("immutable hook runtime changed unexpectedly: %s", destination)
+		}
+		info, err := os.Lstat(destination)
+		if err != nil {
+			return err
+		}
+		if info.Mode().Perm() == mode {
+			return nil
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return atomicWrite(destination, payload, mode)
 }
 
 func hookCommand(subcommand, launcher string) string {
