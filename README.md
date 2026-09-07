@@ -68,10 +68,11 @@ myriad publish [TASK_ID]            publish a live committed checkpoint
 myriad attach PATH                  attach a second repository to this session
 myriad context --jira KEY...        set display-only Jira contexts
 myriad context --pr NUMBER...       set display-only pull-request contexts
+myriad activity --summary TEXT     share work intent; repeat --path PATH
 myriad list                         list tasks
 myriad status [TASK_ID]             inspect task state
 myriad diagnose TASK_ID             dump refs, processes, blockers, and logs
-myriad inbox                        inspect integration handoff notices
+myriad inbox                        inspect work and integration notices
 myriad handoff EVENT_ID             release a lease for queued integration
 myriad integrate TASK_ID            retry local integration
 myriad recover TASK_ID              recover preserved work
@@ -83,6 +84,44 @@ myriad statusline [--claude]        render active task status
 An integration blocked by an active repository session remains queued and is
 retried automatically after that session exits. Myriad does not interrupt the
 foreground agent or request a handoff merely to advance the target sooner.
+
+Managed Codex and Claude sessions automatically share work activity with other
+live managed sessions using the same Git repository, including repositories
+joined through `myriad attach`. New sessions learn what is already underway;
+existing sessions receive new or changed work summaries. Overlapping intended
+files or directories and observed changed files get an explicit overlap notice.
+Related work in different files remains visible through repository-wide summaries.
+
+Myriad's prompt hook asks the agent to announce its intent before editing and
+update it when the task changes. This is an agent step, not an operator step:
+
+```console
+myriad activity --summary 'Fix token refresh' --path internal/auth
+```
+
+Paths are relative to the repository root; repeat `--path` for more scopes.
+Running the command in an attached worktree selects that repository. Without an
+explicit summary, the initial notice uses the semantic branch name. Myriad does
+not copy prompts, transcripts, or file contents to peer sessions, and it makes no
+additional model calls for activity sharing.
+
+The [Codex](https://learn.chatgpt.com/docs/hooks#posttooluse) and
+[Claude](https://code.claude.com/docs/en/hooks#posttooluse) hooks refresh changed
+file names and add notices to the agent's context at the next prompt or completed
+tool call. A long-running tool or reasoning step can delay receipt. File scans
+are throttled to once per two seconds during tool use, with a final refresh at
+the end of the turn. Committed, staged, unstaged, and untracked changes count;
+ignored files and `.ai-memory` do not. File lists are bounded, and notices mark
+truncated lists. Declaring directory scopes covers work before edits appear.
+
+Each inbox keeps only the latest activity for a live peer task, suppresses
+unchanged notices, and removes entries when the peer leaves. Notices are advisory
+data: they grant no exclusive ownership, do not prevent Git conflicts, never
+request a handoff, and do not start idle turns or block an agent from finishing.
+The hook runtime is pinned at launch, so these hooks apply to sessions started
+with the updated binary; already-running sessions keep their existing runtime.
+Custom agents can announce intent through the command, but automatic receipt
+requires the Codex or Claude hook integration.
 
 `myriad publish` replays non-conflicting committed work onto an advanced target
 without operator involvement. If that replay has a content conflict, Myriad
