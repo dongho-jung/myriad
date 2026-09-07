@@ -453,11 +453,9 @@ func contextCommand(store *Store, taskID string, jira, pullRequests []string, cl
 	action := ""
 	if clearJira {
 		context["jira_issues"] = []string{}
-		delete(context, "jira_issue")
 		action = "Jira cleared"
 	} else if clearPR {
 		context["pull_request_numbers"] = []int{}
-		delete(context, "pull_request_number")
 		action = "PR cleared"
 	} else if len(jira) > 0 {
 		issues, err := normalizedJiraIssues(jira)
@@ -465,7 +463,6 @@ func contextCommand(store *Store, taskID string, jira, pullRequests []string, cl
 			return err
 		}
 		context["jira_issues"] = issues
-		delete(context, "jira_issue")
 		action = "Jira " + strings.Join(issues, " ")
 	} else if len(pullRequests) > 0 {
 		numbers := []int{}
@@ -477,7 +474,6 @@ func contextCommand(store *Store, taskID string, jira, pullRequests []string, cl
 			numbers = appendUniqueInts(numbers, number)
 		}
 		context["pull_request_numbers"] = numbers
-		delete(context, "pull_request_number")
 		labels := make([]string, 0, len(numbers))
 		for _, number := range numbers {
 			labels = append(labels, fmt.Sprintf("#%d", number))

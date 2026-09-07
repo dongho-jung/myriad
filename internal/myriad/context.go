@@ -36,9 +36,6 @@ func appendUniqueInts(values []int, additions ...int) []int {
 func normalizedJiraIssues(value any) ([]string, error) {
 	raw := []string{}
 	switch current := value.(type) {
-	case nil:
-	case string:
-		raw = append(raw, current)
 	case []string:
 		raw = append(raw, current...)
 	case []any:
@@ -53,23 +50,19 @@ func normalizedJiraIssues(value any) ([]string, error) {
 		return nil, fail("invalid Jira issue list")
 	}
 
-	result := []string{}
-	for _, value := range raw {
+	for index, value := range raw {
 		issue, err := jiraIssue(value)
 		if err != nil {
 			return nil, err
 		}
-		result = appendUniqueStrings(result, issue)
+		raw[index] = issue
 	}
-	return result, nil
+	return appendUniqueStrings([]string{}, raw...), nil
 }
 
 func normalizedPullRequestNumbers(value any) ([]int, error) {
 	raw := []any{}
 	switch current := value.(type) {
-	case nil:
-	case int:
-		raw = append(raw, current)
 	case []int:
 		for _, number := range current {
 			raw = append(raw, number)
@@ -77,7 +70,7 @@ func normalizedPullRequestNumbers(value any) ([]int, error) {
 	case []any:
 		raw = append(raw, current...)
 	default:
-		raw = append(raw, current)
+		return nil, fail("invalid pull request number list")
 	}
 
 	result := []int{}
@@ -86,16 +79,13 @@ func normalizedPullRequestNumbers(value any) ([]int, error) {
 		if !ok || number <= 0 {
 			return nil, fail("invalid pull request number list")
 		}
-		result = appendUniqueInts(result, number)
+		result = append(result, number)
 	}
-	return result, nil
+	return appendUniqueInts([]int{}, result...), nil
 }
 
 func taskContextJiraIssues(context Record) ([]string, bool, error) {
 	value, exists := context["jira_issues"]
-	if !exists {
-		value, exists = context["jira_issue"]
-	}
 	if !exists {
 		return nil, false, nil
 	}
@@ -106,9 +96,6 @@ func taskContextJiraIssues(context Record) ([]string, bool, error) {
 func taskContextPullRequestNumbers(context Record) ([]int, bool, error) {
 	value, exists := context["pull_request_numbers"]
 	if !exists {
-		value, exists = context["pull_request_number"]
-	}
-	if !exists {
 		return nil, false, nil
 	}
 	numbers, err := normalizedPullRequestNumbers(value)
@@ -116,6 +103,13 @@ func taskContextPullRequestNumbers(context Record) ([]int, bool, error) {
 }
 
 func normalizeTaskContext(context Record) error {
+	for key := range context {
+		switch key {
+		case "schema_version", "task_id", "updated_at", "jira_issues", "pull_request_numbers":
+		default:
+			return fail("unknown task context field: %s", key)
+		}
+	}
 	issues, hasIssues, err := taskContextJiraIssues(context)
 	if err != nil {
 		return err
@@ -123,7 +117,6 @@ func normalizeTaskContext(context Record) error {
 	if hasIssues {
 		context["jira_issues"] = issues
 	}
-	delete(context, "jira_issue")
 
 	numbers, hasNumbers, err := taskContextPullRequestNumbers(context)
 	if err != nil {
@@ -132,7 +125,6 @@ func normalizeTaskContext(context Record) error {
 	if hasNumbers {
 		context["pull_request_numbers"] = numbers
 	}
-	delete(context, "pull_request_number")
 	return nil
 }
 

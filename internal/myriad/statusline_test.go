@@ -173,9 +173,9 @@ func TestRunContextCommandAcceptsSpaceSeparatedValues(t *testing.T) {
 	}
 }
 
-func TestLegacyContextReadsAsPluralAndClearSuppressesInference(t *testing.T) {
+func TestTaskContextClearSuppressesInference(t *testing.T) {
 	store := testStore(t)
-	taskID := "legacy-context-task"
+	taskID := "display-context-task"
 	if err := store.Save(Record{
 		"task_id": taskID, "status": StatusCreated,
 		"description": "CAPE-999 and PR #999",
@@ -183,10 +183,10 @@ func TestLegacyContextReadsAsPluralAndClearSuppressesInference(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload, err := marshalPrivate(Record{
-		"schema_version":      ContextSchema,
-		"task_id":             taskID,
-		"jira_issue":          "cape-123",
-		"pull_request_number": 82,
+		"schema_version":       ContextSchema,
+		"task_id":              taskID,
+		"jira_issues":          []string{"cape-123"},
+		"pull_request_numbers": []int{82},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func TestLegacyContextReadsAsPluralAndClearSuppressesInference(t *testing.T) {
 		"task_id": taskID, "description": "CAPE-999 and PR #999",
 	})
 	if got, want := displayContext(issues, numbers), "[CAPE-123] [#82]"; got != want {
-		t.Fatalf("legacy context = %q, want %q", got, want)
+		t.Fatalf("stored context = %q, want %q", got, want)
 	}
 	if err := contextCommand(store, taskID, nil, nil, true, false); err != nil {
 		t.Fatal(err)
@@ -216,6 +216,38 @@ func TestLegacyContextReadsAsPluralAndClearSuppressesInference(t *testing.T) {
 	})
 	if got := displayContext(issues, numbers); got != "" {
 		t.Fatalf("cleared context fell back to inferred values: %q", got)
+	}
+}
+
+func TestTaskContextRejectsOtherLayouts(t *testing.T) {
+	store := testStore(t)
+	taskID := "invalid-context-task"
+	path, err := store.ContextPath(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, context := range []Record{
+		{"jira_issue": "CAPE-123"},
+		{"pull_request_number": 82},
+		{"jira_issues": "CAPE-123"},
+		{"pull_request_numbers": 82},
+		{"jira_issues": nil},
+		{"pull_request_numbers": nil},
+		{"jira_issues": []any{82}},
+		{"pull_request_numbers": []any{"82"}},
+		{"unknown": true},
+	} {
+		context["schema_version"], context["task_id"] = ContextSchema, taskID
+		payload, err := marshalPrivate(context)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := atomicWrite(path, payload, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadTaskContext(store, taskID); err == nil {
+			t.Fatalf("accepted a context outside the current schema: %s", payload)
+		}
 	}
 }
 
